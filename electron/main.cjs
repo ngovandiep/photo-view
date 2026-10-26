@@ -1,14 +1,19 @@
 'use strict';
 
-const { app, BrowserWindow, dialog, ipcMain } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, protocol } = require('electron');
 const crypto = require('node:crypto');
-const { constants: fsConstants } = require('node:fs');
+const { constants: fsConstants, createReadStream } = require('node:fs');
+const { Readable } = require('node:stream');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { fileURLToPath } = require('node:url');
 const indexStore = require('../index-store.js');
 
 const imageExtensions = new Set(['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'avif', 'heic', 'heif', 'tif', 'tiff', 'dng']);
+const videoExtensions = new Set(['mp4', 'm4v', 'mov', 'webm', 'mkv', 'ogv', 'avi', '3gp']);
+const documentExtensions = new Set(['pdf']);
+const mediaMimeTypes = { mp4: 'video/mp4', m4v: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm', mkv: 'video/x-matroska', ogv: 'video/ogg', avi: 'video/x-msvideo', '3gp': 'video/3gpp', pdf: 'application/pdf' };
+protocol.registerSchemesAsPrivileged([{ scheme: 'still-media', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }]);
 const maxIndexBytes = 100 * 1024 * 1024;
 const maxPhotoBytes = 512 * 1024 * 1024;
 const maxIndexedFiles = 500000;
@@ -33,16 +38,35 @@ function normalizeRootIdentity(root) {
 function idForRoot(root) { return crypto.createHash('sha256').update(normalizeRootIdentity(root)).digest('hex'); }
 function newManifest() { return { format: 'still-photo-library-roots', version: 1, libraries: [] }; }
 
-async function writeJsonAtomic(file, value) {
+const writeQueues = new Map();
+async function renameWithRetry(from, to) {
+  // Windows refuses to replace a file that antivirus, the search indexer or a reader briefly holds open.
+  for (let attempt = 0; ; attempt++) {
+    try { return await fs.rename(from, to); }
+    catch (error) {
+      if (!['EPERM', 'EBUSY', 'EACCES'].includes(error.code)) throw error;
+      if (attempt >= 8) { await fs.copyFile(from, to); return; }
+      await new Promise(resolve => setTimeout(resolve, 40 * 2 ** Math.min(attempt, 5)));
+    }
+  }
+}
+function writeJsonAtomic(file, value) {
+  const run = (writeQueues.get(file) || Promise.resolve()).catch(() => {}).then(() => writeJsonOnce(file, value));
+  writeQueues.set(file, run);
+  run.catch(() => {}).then(() => { if (writeQueues.get(file) === run) writeQueues.delete(file); });
+  return run;
+}
+async function writeJsonOnce(file, value) {
   await fs.mkdir(path.dirname(file), { recursive: true });
   const temporary = `${file}.${process.pid}.${crypto.randomUUID()}.tmp`;
   try {
     await fs.writeFile(temporary, JSON.stringify(value, null, 2), { encoding: 'utf8', flag: 'wx' });
-    await fs.rename(temporary, file);
+    await renameWithRetry(temporary, file);
   } catch (error) {
     await fs.rm(temporary, { force: true }).catch(() => {});
     throw error;
   }
+  await fs.rm(temporary, { force: true }).catch(() => {});
 }
 
 async function readManifest() {
@@ -171,7 +195,7 @@ async function scanLibrary(event, libraryId, requestId) {
         } else if (entry.isFile()) {
           processed++;
           const extension = path.extname(entry.name).slice(1).toLowerCase();
-          if (imageExtensions.has(extension)) {
+          if (imageExtensions.has(extension) || videoExtensions.has(extension) || documentExtensions.has(extension)) {
             try {
               const stats = await fs.stat(path.join(directory.absolute, entry.name));
               files.push({ path: relativePath, size: stats.size, lastModified: Math.round(stats.mtimeMs) });
@@ -223,7 +247,86 @@ async function readPhoto(libraryId, relativePath) {
   return new Uint8Array(await fs.readFile(resolvedFile));
 }
 
+// Streams a registered library's video with HTTP range support so large files seek without loading into memory.
+async function handleMediaRequest(request) {
+  try {
+    const url = new URL(request.url);
+    const library = await registeredLibrary(url.hostname);
+    const safeRelative = indexStore.normalizePath(decodeURIComponent(url.pathname.slice(1)));
+    const mediaExtension = path.extname(safeRelative).slice(1).toLowerCase();
+    if (!videoExtensions.has(mediaExtension) && !documentExtensions.has(mediaExtension)) return new Response('Unsupported', { status: 415 });
+    const root = await fs.realpath(library.path);
+    const candidate = path.resolve(root, ...safeRelative.split('/'));
+    if (!isInside(root, candidate)) return new Response('Forbidden', { status: 403 });
+    const resolvedFile = await fs.realpath(candidate);
+    if (!isInside(root, resolvedFile)) return new Response('Forbidden', { status: 403 });
+    const stats = await fs.stat(resolvedFile);
+    if (!stats.isFile()) return new Response('Not found', { status: 404 });
+    // Node's fs opens files with delete-sharing, so playing a file never blocks renaming its folder (net.fetch on file:// does).
+    const size = stats.size;
+    let start = 0; let end = size - 1; let status = 200;
+    const range = /^bytes=(\d*)-(\d*)$/.exec(request.headers.get('range') || '');
+    if (range && (range[1] || range[2])) {
+      if (range[1]) { start = Number(range[1]); if (range[2]) end = Math.min(end, Number(range[2])); }
+      else { start = Math.max(0, size - Number(range[2])); }
+      if (start >= size || start > end) return new Response('Range not satisfiable', { status: 416, headers: { 'Content-Range': `bytes */${size}` } });
+      status = 206;
+    }
+    const headers = { 'Content-Type': mediaMimeTypes[mediaExtension] || 'application/octet-stream', 'Accept-Ranges': 'bytes', 'Content-Length': String(size ? end - start + 1 : 0) };
+    if (status === 206) headers['Content-Range'] = `bytes ${start}-${end}/${size}`;
+    if (!size) return new Response(null, { status: 200, headers });
+    return new Response(Readable.toWeb(createReadStream(resolvedFile, { start, end })), { status, headers });
+  } catch {
+    return new Response('Not found', { status: 404 });
+  }
+}
+
+// Windows reports EPERM/EBUSY while any process (including this app's media previews, antivirus or Explorer) holds a file open.
+async function renameWithRetry(from, to) {
+  const transient = new Set(['EPERM', 'EBUSY', 'EACCES']);
+  for (let attempt = 0; ; attempt++) {
+    try { return await fs.rename(from, to); }
+    catch (error) {
+      if (!transient.has(error.code)) throw error;
+      if (attempt >= 7) throw new Error('Windows would not rename this folder because something is using a file inside it (for example a File Explorer preview or window, a media player, a backup/sync tool or antivirus). Close anything that has this folder open and try again.');
+      await new Promise(resolve => setTimeout(resolve, 300));
+    }
+  }
+}
+
+async function moveFolder(libraryId, fromRelative, toRelative) {
+  const library = await registeredLibrary(libraryId);
+  const from = indexStore.normalizePath(fromRelative);
+  const to = indexStore.normalizePath(toRelative);
+  const segments = to.split('/');
+  if (segments.some(part => /[<>:"|?*\u0000-\u001f]/.test(part) || /[. ]$/.test(part))) throw new Error('The new folder name contains characters Windows does not allow.');
+  if (to === from || to.startsWith(`${from}/`)) throw new Error('A folder cannot be moved into itself.');
+  const root = await fs.realpath(library.path);
+  const source = path.resolve(root, ...from.split('/'));
+  const target = path.resolve(root, ...segments);
+  if (!isInside(root, source) || !isInside(root, target)) throw new Error('Folders must stay inside the photo library.');
+  const sourceReal = await fs.realpath(source);
+  if (!isInside(root, sourceReal) || !(await fs.stat(sourceReal)).isDirectory()) throw new Error('The source folder is not available.');
+  const parent = await fs.realpath(path.dirname(target)).catch(() => null);
+  if (!parent || (parent !== root && !isInside(root, parent))) throw new Error('The destination folder does not exist.');
+  if (await fs.access(target).then(() => true, () => false)) throw new Error('An item with that name already exists at the destination.');
+  const { index } = indexStore.moveFolder(await readIndex(libraryId), from, to);
+  await renameWithRetry(sourceReal, target);
+  try {
+    await saveIndex(libraryId, index);
+  } catch (error) {
+    await renameWithRetry(target, sourceReal).catch(() => {});
+    throw error;
+  }
+  app.emit('library-folder-moved', libraryId, from, to);
+  return { moved: true, from, to };
+}
+
 function registerIpc() {
+  ipcMain.handle('folder:move', (_event, libraryId, from, to) => {
+    if (typeof from !== 'string' || typeof to !== 'string') throw new Error('Invalid folder request.');
+    return moveFolder(libraryId, from, to);
+  });
   ipcMain.handle('library:list', async () => {
     const manifest = await readManifest();
     return Promise.all(manifest.libraries.map(libraryStatus));
@@ -315,7 +418,30 @@ else {
     if (process.platform === 'win32') app.setAppUserModelId('com.still.photolibrary');
     const { session } = require('electron');
     session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
+    protocol.handle('still-media', handleMediaRequest);
     registerIpc();
+    const authApi = require('./auth.cjs').register({
+      app,
+      ipcMain,
+      safeStorage: require('electron').safeStorage,
+      libraries: {
+        list: async () => (await readManifest()).libraries,
+        read: readIndex,
+        save: saveIndex
+      }
+    });
+    require('./wifi-sync/ipc.cjs').register({
+      app,
+      ipcMain,
+      safeStorage: require('electron').safeStorage,
+      getWindow: () => mainWindow,
+      manifestPath,
+      readIndex,
+      saveIndex,
+      indexStore,
+      getAccount: authApi.getUser,
+      verifyLogin: authApi.verifyLogin
+    });
     createWindow();
   }).catch(error => {
     dialog.showErrorBox('Still could not start', error.message);

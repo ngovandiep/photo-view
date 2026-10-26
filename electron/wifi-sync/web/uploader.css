@@ -1,0 +1,26 @@
+body{margin:0;font:16px system-ui,sans-serif;background:#fafbfa;color:#242923}
+main{max-width:480px;margin:0 auto;padding:24px 24px 90px}
+.visually-hidden{position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;clip:rect(0 0 0 0)}
+.dropzone{display:flex;flex-direction:column;align-items:center;gap:4px;margin:10px 0;padding:28px 16px 18px;border:2px dashed #b9c7ba;border-radius:14px;background:#fff;text-align:center;cursor:pointer;color:#242923}
+.dropzone:hover,.dropzone:focus-visible,.dropzone.over{border-color:#3b6b4a;background:#eef4ef;outline:none}
+.dz-icon{display:grid;place-items:center;width:52px;height:52px;border-radius:50%;background:#3b6b4a;color:#fff;font-size:26px}
+.dz-hint{color:#6d786a;font-size:14px}
+.dropzone button{width:auto;margin:12px 0 0;padding:9px 16px}
+.mode{display:flex;gap:8px;margin:10px 0 0;padding:0;border:0}
+.mode label{flex:1;display:flex;align-items:center;justify-content:center;gap:6px;padding:10px;border:1px solid #cfd6cf;border-radius:8px;font-size:14px;cursor:pointer;background:#fff}
+.mode label:has(input:checked){border-color:#3b6b4a;background:#eef4ef;font-weight:600}
+.mode input{display:inline;width:auto;margin:0}
+.picked{margin:6px 0 0;font-size:14px;color:#3b6b4a;min-height:18px}
+.bottom-nav{position:fixed;left:0;right:0;bottom:0;display:grid;grid-template-columns:repeat(6,1fr);padding-bottom:env(safe-area-inset-bottom);background:#fafbfa;border-top:1px solid #e5e9e5}
+.bottom-nav a{display:flex;flex-direction:column;align-items:center;gap:2px;padding:7px 0 6px;color:#6d786a;font-size:11px;text-decoration:none}
+.bottom-nav span{font-size:20px;line-height:1.1}
+.bottom-nav .active{color:#3b6b4a;font-weight:700}
+h1{font-size:22px}
+input,button{display:block;width:100%;box-sizing:border-box;margin:10px 0;padding:12px;border:1px solid #cfd6cf;border-radius:8px;font:inherit}
+button{background:#3b6b4a;color:#fff;border:0}
+button.secondary{background:none;color:#3b6b4a;border:1px solid #cfd6cf}
+button:disabled{opacity:.6}
+ul{padding:0;list-style:none}
+li{display:flex;justify-content:space-between;gap:8px;padding:6px 0;font-size:14px;border-bottom:1px solid #e5e9e5}
+li span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#message{color:#b3261e;min-height:20px}

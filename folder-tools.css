@@ -1,0 +1,13 @@
+.tree-row{align-items:center}
+.tree-action{flex:none;width:24px;height:24px;border:0;border-radius:6px;background:none;color:var(--muted);cursor:pointer;opacity:0}
+.tree-row:hover .tree-action,.tree-row:focus-within .tree-action{opacity:1}
+.tree-action:hover,.tree-action:focus-visible{background:var(--tint);color:var(--ink)}
+.folder-dialog-backdrop{position:fixed;inset:0;z-index:110;display:grid;place-items:center;background:#24292359}
+.folder-dialog{display:grid;gap:12px;width:min(400px,92vw);padding:24px;border-radius:14px;background:var(--surface);box-shadow:0 20px 60px #0004}
+.folder-dialog h3{margin:0;font-size:18px}
+.folder-dialog input,.folder-dialog select{padding:10px 12px;border:1px solid var(--line);border-radius:8px;font:inherit;color:var(--ink)}
+.folder-dialog p{margin:0;font-size:12px}
+.folder-dialog-error{min-height:16px;color:#b3261e}
+.folder-dialog-actions{display:flex;justify-content:flex-end;gap:8px}
+.folder-dialog-actions button{padding:8px 14px;border:1px solid var(--line);border-radius:8px;background:none;font:inherit;cursor:pointer;color:var(--ink)}
+.folder-dialog-actions .primary{border:0;background:var(--accent);color:#fff}

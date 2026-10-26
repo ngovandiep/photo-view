@@ -1,0 +1,26 @@
+#wifi-open{display:flex;align-items:center;gap:10px;width:100%;margin:8px 0;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:none;font:inherit;color:var(--ink);cursor:pointer}
+#wifi-open:hover,#wifi-open:focus-visible{background:var(--tint)}
+#wifi-backdrop{position:fixed;inset:0;z-index:90;background:#24292359}
+#wifi-panel{position:fixed;top:5vh;left:50%;z-index:95;transform:translateX(-50%);width:min(560px,94vw);max-height:90vh;overflow:auto;padding:24px;border-radius:14px;background:var(--surface);box-shadow:0 20px 60px #0004}
+#wifi-backdrop[hidden],#wifi-panel[hidden]{display:none}
+.wifi-head{display:flex;justify-content:space-between;align-items:center}
+.wifi-head h2{margin:0;font-size:22px}
+.wifi-close{border:0;background:none;font-size:18px;cursor:pointer;color:var(--ink)}
+.wifi-section{margin-top:18px;padding-top:14px;border-top:1px solid var(--line)}
+.wifi-section h3{margin:0 0 8px;font-size:14px}
+.wifi-on{color:#1b7a3d;font-weight:600}.wifi-off{color:var(--muted)}
+.wifi-primary{padding:9px 14px;border:0;border-radius:8px;background:var(--accent);color:#fff;font:inherit;cursor:pointer}
+.wifi-danger{color:#b3261e}
+.wifi-hint{margin:6px 0;font-size:12px;color:var(--muted)}
+.wifi-error{margin:10px 0 0;font-size:13px;color:#b3261e}
+.wifi-fingerprint{display:block;margin-top:6px;font-size:11px;word-break:break-all}
+.wifi-qr{display:block;margin:12px auto;width:200px;height:200px}
+.wifi-code{margin:4px 0;text-align:center;font:600 26px ui-monospace,Consolas,monospace;letter-spacing:.12em}
+.wifi-stats{display:grid;grid-template-columns:repeat(6,1fr);gap:6px;text-align:center;font-size:11px;color:var(--muted)}
+.wifi-stats strong{display:block;font-size:20px;color:var(--ink)}
+.wifi-list{margin:8px 0 0;padding:0;list-style:none;display:grid;gap:8px}
+.wifi-list li{display:flex;justify-content:space-between;align-items:center;gap:10px;font-size:13px}
+.wifi-list li>div{display:grid;min-width:0}
+.wifi-list button{padding:6px 10px;border:1px solid var(--line);border-radius:6px;background:none;font:inherit;cursor:pointer}
+.wifi-field{display:grid;gap:4px;margin-bottom:10px;font-size:13px;color:var(--muted)}
+.wifi-field input,.wifi-field select{padding:8px 10px;border:1px solid var(--line);border-radius:8px;font:inherit;color:var(--ink)}

@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Still · Send photos</title>
+  <link rel="stylesheet" href="/uploader.css">
+  <script defer src="/uploader.js"></script>
+</head>
+<body>
+  <main>
+    <h1>Send photos to your computer</h1>
+    <section id="pair-section">
+      <p>Enter the pairing code shown in the desktop app.</p>
+      <input id="code" autocomplete="off" autocapitalize="characters" placeholder="ABCD-EFGH" aria-label="Pairing code">
+      <input id="device-name" autocomplete="off" placeholder="Device name" aria-label="Device name">
+      <button id="pair" type="button">Pair</button>
+    </section>
+    <section id="upload-section" hidden>
+      <p id="paired-as"></p>
+      <fieldset class="mode" aria-label="What to send">
+        <label><input type="radio" name="mode" value="files" checked> Photos &amp; videos</label>
+        <label><input type="radio" name="mode" value="folder"> A whole folder</label>
+      </fieldset>
+      <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Choose photos and videos">
+        <div class="dz-icon" aria-hidden="true">⇧</div>
+        <strong id="dz-title">Tap to choose photos &amp; videos</strong>
+        <span id="dz-hint" class="dz-hint">or drop files here</span>
+        <p id="picked" class="picked" role="status"></p>
+      </div>
+      <input id="files" class="visually-hidden" type="file" accept="image/*,video/*" multiple aria-label="Choose photos">
+      <input id="folder" class="visually-hidden" type="file" webkitdirectory multiple aria-label="Choose a whole folder">
+      <button id="pick-folder" type="button" class="secondary" hidden>Link a folder (can delete after transfer)</button>
+      <label id="delete-row" hidden><input id="delete-after" type="checkbox"> After upload, offer to delete verified copies from this phone</label>
+      <button id="send" type="button">Upload selected</button>
+      <button id="forget" type="button" class="secondary">Unpair this browser</button>
+      <ul id="list"></ul>
+    </section>
+    <p id="message" role="status"></p>
+  </main>
+  <nav class="bottom-nav" aria-label="Pages">
+    <a href="/app" data-go="library"><span aria-hidden="true">▦</span>Library</a>
+    <a href="/app" data-go="folders"><span aria-hidden="true">📁</span>Folders</a>
+    <a href="/app" data-go="timeline"><span aria-hidden="true">🗓</span>Timeline</a>
+    <a href="/app" data-go="favorites"><span aria-hidden="true">♥</span>Favorites</a>
+    <a href="/pair" class="active"><span aria-hidden="true">⇧</span>Send</a>
+    <a href="/device"><span aria-hidden="true">📱</span>Phone</a>
+  </nav>
+</body>
+</html>

@@ -4,19 +4,28 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self' blob: data:; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; font-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' blob: data:; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; media-src 'self' blob: still-media:; frame-src 'self' blob: still-media:; font-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
   <title>Still / Photo Library</title>
   <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="auth.css">
+  <link rel="stylesheet" href="wifi-sync.css">
+  <link rel="stylesheet" href="folder-tools.css">
+  <link rel="stylesheet" href="video.css">
+  <link rel="stylesheet" href="timeline.css">
   <script defer src="lucide.min.js"></script>
   <script defer src="index-store.js"></script>
+  <script defer src="auth-ui.js"></script>
+  <script defer src="wifi-sync-ui.js"></script>
   <script defer src="app.js"></script>
 </head>
 <body>
   <aside class="sidebar" id="sidebar">
     <a class="brand" href="index.html"><span class="brand-mark">S</span>still<span class="brand-dot">.</span></a>
-    <div class="eyebrow">YOUR PHOTO LIBRARY</div>
+    <div class="eyebrow">YOUR LIBRARY</div>
     <nav id="navigation" aria-label="Library">
       <button data-view="photos" class="active"><span aria-hidden="true">▦</span>Photos</button>
+      <button data-view="videos"><span aria-hidden="true">▶</span>Videos</button>
+      <button data-view="documents"><span aria-hidden="true">▤</span>Documents</button>
       <button data-view="timeline"><span aria-hidden="true">◷</span>Timeline</button>
       <button data-view="folders"><span aria-hidden="true">▱</span>Folders</button>
       <button data-view="albums"><span aria-hidden="true">▣</span>Albums</button>
@@ -45,6 +54,7 @@
     <section class="content">
       <div class="heading-row"><div><div class="eyebrow" id="breadcrumb">LIBRARY</div><h1 id="view-title">Photos</h1><p id="result-count" class="muted">No photos indexed</p></div><div class="view-switch" aria-label="Display mode"><button id="grid-mode" class="icon-button active" title="Photo grid" aria-label="Photo grid">▦</button><button id="timeline-mode" class="icon-button" title="Date timeline" aria-label="Date timeline">◷</button></div></div>
       <div class="controls">
+        <div id="kind-tabs" class="kind-tabs" role="group" aria-label="Show"><button type="button" data-kind="" aria-pressed="true">All <span></span></button><button type="button" data-kind="photo" aria-pressed="false">Photos <span></span></button><button type="button" data-kind="video" aria-pressed="false">Videos <span></span></button><button type="button" data-kind="document" aria-pressed="false">PDFs <span></span></button></div>
         <label>Folder<select id="folder-filter"><option value="">All folders</option></select></label>
         <label>Format<select id="type-filter"><option value="">All formats</option></select></label>
         <label>Sort<select id="sort"><option value="name">Filename A–Z</option><option value="name-desc">Filename Z–A</option><option value="date-desc">Filename date: newest</option><option value="date-asc">Filename date: oldest</option><option value="modified">Modified: newest</option><option value="added">Added to library: newest</option></select></label>
@@ -61,7 +71,7 @@
     </section>
   </main>
   <dialog id="viewer" aria-label="Photo viewer">
-    <div class="viewer-toolbar"><span id="viewer-position"></span><span id="viewer-engine"></span><button id="favorite" class="icon-button" title="Toggle favorite" aria-label="Toggle favorite">♡</button><button id="zoom-out" class="icon-button" title="Zoom out" aria-label="Zoom out">−</button><button id="zoom-in" class="icon-button" title="Zoom in" aria-label="Zoom in">＋</button><button id="toggle-fullscreen" class="icon-button" title="Toggle fullscreen" aria-label="Toggle fullscreen">⛶</button><button id="viewer-close" class="icon-button" title="Close viewer" aria-label="Close viewer">×</button></div>
+    <div class="viewer-toolbar"><span id="viewer-position"></span><span id="viewer-engine"></span><button id="favorite" class="icon-button" title="Toggle favorite" aria-label="Toggle favorite">♡</button><button id="toggle-details" class="icon-button" title="Hide details" aria-label="Hide details" aria-pressed="true">ⓘ</button><button id="zoom-out" class="icon-button" title="Zoom out" aria-label="Zoom out">−</button><button id="zoom-in" class="icon-button" title="Zoom in" aria-label="Zoom in">＋</button><button id="toggle-fullscreen" class="icon-button" title="Toggle fullscreen" aria-label="Toggle fullscreen">⛶</button><button id="viewer-close" class="icon-button" title="Close viewer" aria-label="Close viewer">×</button></div>
     <div class="viewer-body"><div class="image-stage" id="image-stage"><button id="viewer-prev" class="viewer-arrow previous" aria-label="Previous photo" title="Previous photo">‹</button><div id="pan-area"><img id="large-image" alt="" draggable="false"></div><p id="viewer-state" role="status"></p><button id="viewer-next" class="viewer-arrow next" aria-label="Next photo" title="Next photo">›</button></div>
     <aside class="details"><div class="eyebrow">PHOTO DETAILS</div><h2 id="detail-name"></h2><dl id="detail-metadata"></dl><label for="photo-tags">Tags <span class="muted">(comma separated)</span></label><input id="photo-tags" placeholder="Add tags"><label for="photo-albums">Albums <span class="muted">(comma separated)</span></label><input id="photo-albums" placeholder="Add to albums"><button id="save-details" class="primary">Save details</button><p id="detail-status" role="status"></p><div id="suggestions"></div></aside></div>
   </dialog>

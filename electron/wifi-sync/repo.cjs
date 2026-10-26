@@ -1,0 +1,177 @@
+'use strict';
+
+const crypto = require('node:crypto');
+const { transaction } = require('./db.cjs');
+const security = require('./security.cjs');
+
+const MAX_RETRIES = 6;
+const FINAL_STATES = new Set(['indexed', 'failed_permanent', 'cancelled']);
+
+const DEFAULT_SETTINGS = {
+  enabled: false,
+  port: 8443,
+  destinationLibraryId: '',
+  destinationFolder: 'Wi-Fi Sync',
+  bandwidthLimitKBps: 0,
+  maxFileSizeMB: 4096,
+  minFreeSpaceMB: 500,
+  pairingTtlSeconds: 120,
+  wifiOnly: true
+};
+
+function createRepo(db, { now = Date.now } = {}) {
+  const q = sql => db.prepare(sql);
+
+  function getSettings() {
+    const settings = { ...DEFAULT_SETTINGS };
+    for (const row of q('SELECT key, value FROM settings').all()) {
+      if (row.key in settings) { try { settings[row.key] = JSON.parse(row.value); } catch { /* keep default */ } }
+    }
+    return settings;
+  }
+  function setSettings(patch) {
+    const run = q('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value');
+    for (const [key, value] of Object.entries(patch)) {
+      if (key in DEFAULT_SETTINGS && typeof value === typeof DEFAULT_SETTINGS[key]) run.run(key, JSON.stringify(value));
+    }
+    return getSettings();
+  }
+
+  function createPairingCode(ttlSeconds) {
+    return transaction(db, () => {
+      q('UPDATE pairing_codes SET used_at = ? WHERE used_at IS NULL').run(now());
+      const code = security.newPairingCode();
+      const expiresAt = now() + ttlSeconds * 1000;
+      q('INSERT INTO pairing_codes (code_hash, expires_at, created_at) VALUES (?, ?, ?)').run(security.hashCode(code), expiresAt, now());
+      return { code, expiresAt };
+    });
+  }
+
+  // The single UPDATE makes claiming atomic: a code can only be redeemed once, and only before it expires.
+  function claimPairingCode(code, name, platform) {
+    return transaction(db, () => {
+      const claimed = q('UPDATE pairing_codes SET used_at = ? WHERE code_hash = ? AND used_at IS NULL AND expires_at > ?')
+        .run(now(), security.hashCode(code), now());
+      if (claimed.changes !== 1) return null;
+      const token = security.newToken();
+      const id = crypto.randomUUID();
+      q('INSERT INTO devices (id, name, platform, token_hash, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)')
+        .run(id, name, platform, security.hashToken(token), now(), now());
+      return { id, token };
+    });
+  }
+
+  function authenticate(token) {
+    if (typeof token !== 'string' || token.length < 20 || token.length > 100) return null;
+    const device = q('SELECT * FROM devices WHERE token_hash = ? AND revoked_at IS NULL').get(security.hashToken(token));
+    if (device) q('UPDATE devices SET last_seen_at = ? WHERE id = ?').run(now(), device.id);
+    return device || null;
+  }
+
+  const listDevices = () => q('SELECT id, name, platform, created_at, last_seen_at, last_sync_at, revoked_at FROM devices ORDER BY created_at').all();
+
+  function revokeDevice(id) {
+    return transaction(db, () => {
+      const result = q('UPDATE devices SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL').run(now(), id);
+      if (result.changes !== 1) return { revoked: false, cancelled: [] };
+      const cancelled = q("SELECT id FROM assets WHERE device_id = ? AND state IN ('discovered','queued','uploading','failed_retryable')").all(id).map(row => row.id);
+      q("UPDATE assets SET state = 'cancelled', updated_at = ? WHERE device_id = ? AND state IN ('discovered','queued','uploading','failed_retryable')").run(now(), id);
+      q("UPDATE sync_sessions SET status = 'cancelled' WHERE device_id = ? AND status = 'open'").run(id);
+      return { revoked: true, cancelled };
+    });
+  }
+
+  function createSession(deviceId, key) {
+    const existing = q('SELECT * FROM sync_sessions WHERE device_id = ? AND idempotency_key = ?').get(deviceId, key);
+    if (existing) return { session: existing, created: false };
+    const id = crypto.randomUUID();
+    q('INSERT INTO sync_sessions (id, device_id, idempotency_key, created_at) VALUES (?, ?, ?, ?)').run(id, deviceId, key, now());
+    return { session: q('SELECT * FROM sync_sessions WHERE id = ?').get(id), created: true };
+  }
+  const getSession = (id, deviceId) => q('SELECT * FROM sync_sessions WHERE id = ? AND device_id = ?').get(id, deviceId);
+
+  function completeSession(id) {
+    q("UPDATE sync_sessions SET status = 'completed', completed_at = ? WHERE id = ? AND status = 'open'").run(now(), id);
+    return q('SELECT * FROM sync_sessions WHERE id = ?').get(id);
+  }
+
+  // Registering the same source asset again returns the existing row, which makes retries idempotent.
+  function registerAsset(deviceId, sessionId, meta) {
+    const existing = q('SELECT * FROM assets WHERE device_id = ? AND source_asset_id = ?').get(deviceId, meta.sourceAssetId);
+    if (existing) {
+      if (!FINAL_STATES.has(existing.state) && existing.session_id !== sessionId) q('UPDATE assets SET session_id = ? WHERE id = ?').run(sessionId, existing.id);
+      return { asset: q('SELECT * FROM assets WHERE id = ?').get(existing.id), created: false };
+    }
+    const id = crypto.randomUUID();
+    const stamp = now();
+    q(`INSERT INTO assets (id, device_id, session_id, source_asset_id, filename, media_type, media_kind, size, captured_at, state, created_at, updated_at, folder_path)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'discovered', ?, ?, ?)`)
+      .run(id, deviceId, sessionId, meta.sourceAssetId, meta.filename, meta.mediaType, meta.kind, meta.size, meta.capturedAt, stamp, stamp, meta.folderPath || null);
+    return { asset: q('SELECT * FROM assets WHERE id = ?').get(id), created: true };
+  }
+
+  const getAsset = id => q('SELECT * FROM assets WHERE id = ?').get(id);
+  const getDeviceAsset = (id, deviceId) => q('SELECT * FROM assets WHERE id = ? AND device_id = ?').get(id, deviceId);
+
+  function update(id, fields) {
+    const keys = Object.keys(fields);
+    q(`UPDATE assets SET ${keys.map(key => `${key} = ?`).join(', ')}, updated_at = ? WHERE id = ?`).run(...keys.map(key => fields[key]), now(), id);
+    return getAsset(id);
+  }
+
+  // Retryable failures back off exponentially and become permanent after MAX_RETRIES.
+  function failRetryable(id, message) {
+    const asset = getAsset(id);
+    const retries = asset.retry_count + 1;
+    if (retries >= MAX_RETRIES) return update(id, { state: 'failed_permanent', retry_count: retries, last_error: message, next_retry_at: null });
+    return update(id, { state: 'failed_retryable', retry_count: retries, last_error: message, next_retry_at: now() + Math.min(30000 * 2 ** retries, 3600000) });
+  }
+  const failPermanent = (id, message) => update(id, { state: 'failed_permanent', last_error: message, next_retry_at: null });
+
+  function progress(sessionId) {
+    const counts = Object.fromEntries(q('SELECT state, COUNT(*) AS n, COALESCE(SUM(size), 0) AS bytes FROM assets WHERE session_id = ? GROUP BY state').all(sessionId).map(row => [row.state, { count: row.n, bytes: row.bytes }]));
+    const total = q('SELECT COUNT(*) AS n, COALESCE(SUM(size),0) AS bytes, COALESCE(SUM(bytes_received),0) AS received FROM assets WHERE session_id = ?').get(sessionId);
+    return { counts, totalAssets: total.n, totalBytes: total.bytes, receivedBytes: total.received };
+  }
+
+  function stats() {
+    const counts = Object.fromEntries(q('SELECT state, COUNT(*) AS n FROM assets GROUP BY state').all().map(row => [row.state, row.n]));
+    const last = q('SELECT MAX(last_sync_at) AS at FROM devices').get().at;
+    const failed = q(`SELECT a.id, a.filename, a.state, a.last_error, a.retry_count, a.next_retry_at, d.name AS device
+                      FROM assets a JOIN devices d ON d.id = a.device_id
+                      WHERE a.state IN ('failed_retryable','failed_permanent') ORDER BY a.updated_at DESC LIMIT 100`).all();
+    return { counts, lastSyncAt: last, failed };
+  }
+
+  // Manual retry from the desktop UI.
+  function requeue(id) {
+    const asset = getAsset(id);
+    if (!asset || !['failed_retryable', 'failed_permanent'].includes(asset.state)) return null;
+    return update(id, { state: asset.bytes_received >= asset.size ? 'uploading' : 'queued', retry_count: 0, next_retry_at: null, last_error: null });
+  }
+
+  const touchDeviceSync = deviceId => q('UPDATE devices SET last_sync_at = ? WHERE id = ?').run(now(), deviceId);
+
+  function relocate(libraryId, from, to) {
+    q(`UPDATE assets SET library_path = ? || substr(library_path, ?) WHERE library_id = ? AND library_path IS NOT NULL
+       AND (library_path = ? OR substr(library_path, 1, ?) = ?)`)
+      .run(to, from.length + 1, libraryId, from, from.length + 1, `${from}/`);
+  }
+
+  function getIdempotent(deviceId, key, endpoint) {
+    const row = q('SELECT status, body FROM idempotent_responses WHERE device_id = ? AND key = ? AND endpoint = ?').get(deviceId, key, endpoint);
+    return row ? { status: row.status, body: JSON.parse(row.body) } : null;
+  }
+  function putIdempotent(deviceId, key, endpoint, status, body) {
+    q('INSERT OR IGNORE INTO idempotent_responses (device_id, key, endpoint, status, body, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(deviceId, key, endpoint, status, JSON.stringify(body), now());
+  }
+
+  return {
+    db, now, getSettings, setSettings, createPairingCode, claimPairingCode, authenticate, listDevices, revokeDevice,
+    createSession, getSession, completeSession, registerAsset, getAsset, getDeviceAsset, update, failRetryable, failPermanent,
+    progress, stats, requeue, touchDeviceSync, relocate, getIdempotent, putIdempotent
+  };
+}
+
+module.exports = { createRepo, DEFAULT_SETTINGS, MAX_RETRIES, FINAL_STATES };

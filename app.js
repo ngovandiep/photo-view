@@ -1,14 +1,21 @@
 (() => {
   'use strict';
   const byId = id => document.getElementById(id);
-  const supported = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'avif', 'bmp', 'heic', 'heif', 'tif', 'tiff', 'dng']);
+  const videoTypes = new Set(['mp4', 'm4v', 'mov', 'webm', 'mkv', 'ogv', 'avi', '3gp']);
+  const documentTypes = new Set(['pdf']);
+  const supported = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'avif', 'bmp', 'heic', 'heif', 'tif', 'tiff', 'dng', ...videoTypes, ...documentTypes]);
+  const isVideo = photo => videoTypes.has(photo.type);
+  const isDocument = photo => documentTypes.has(photo.type);
+  const isImage = photo => !isVideo(photo) && !isDocument(photo);
+  const kindOf = photo => isVideo(photo) ? 'video' : isDocument(photo) ? 'document' : 'photo';
   const pageSize = 72;
   const preferenceKey = 'still-photo-library-ui-v1';
   const indexStore = window.PhotoIndexStore;
   const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
-  const state = { photos: [], filtered: [], folders: new Map(), discoveredIds: new Set(), root: '', scanCompleted: false, view: 'photos', folder: '', collection: '', page: 0, busy: false, generation: 0, metadataPass: 0, viewerIndex: 0, viewerList: [], viewerToken: 0, viewerUrls: new Map(), gridUrls: new Set(), zoom: 1, panX: 0, panY: 0, index: indexStore.create(), indexById: new Map(), indexDirty: false, inaccessiblePaths: [], storageAvailable: true, desktopLibraryId: '', desktopLibraries: [] };
+  const state = { photos: [], filtered: [], folders: new Map(), discoveredIds: new Set(), root: '', scanCompleted: false, view: 'photos', kind: 'photo', folder: '', collection: '', page: 0, busy: false, generation: 0, metadataPass: 0, viewerIndex: 0, viewerList: [], viewerToken: 0, viewerUrls: new Map(), gridUrls: new Set(), zoom: 1, panX: 0, panY: 0, index: indexStore.create(), indexById: new Map(), indexDirty: false, inaccessiblePaths: [], storageAvailable: true, desktopLibraryId: '', desktopLibraries: [] };
   let observer;
   let photoSwipe;
+  let leavingPhotoSwipe = null;
   let photoSwipePromise;
   let desktopSaveTimer;
   let desktopSaveQueue = Promise.resolve();
@@ -116,6 +123,13 @@
   }
 
   function releaseGrid() { observer?.disconnect(); for (const url of state.gridUrls) URL.revokeObjectURL(url); state.gridUrls.clear(); state.generation++; }
+  // Video previews keep their files open; drop them so Windows can rename or move the folder.
+  async function releaseOpenMedia() {
+    state.generation++; observer?.disconnect();
+    document.querySelectorAll('#gallery video').forEach(video => { video.pause(); video.removeAttribute('src'); video.load(); video.remove(); });
+    resetVideo();
+    await new Promise(resolve => setTimeout(resolve, 250));
+  }
   function resetLibrary(root) {
     if (!window.desktopLibrary && state.index.root && state.index.root !== root && state.index.entries.length) {
       const proceed = window.confirm(`The current index is for "${state.index.root}". Export it before switching roots. Continue with a new index for "${root}"?`);
@@ -262,6 +276,14 @@
 
   async function initializeDesktop() {
     document.body.classList.add('desktop-app');
+    // Wi-Fi sync imports photos in the background; rescan once things settle so they appear.
+    let libraryChangeTimer = 0;
+    window.addEventListener('still:library-changed', event => {
+      clearTimeout(libraryChangeTimer);
+      libraryChangeTimer = setTimeout(() => {
+        if (event.detail?.libraryId === state.desktopLibraryId && !state.busy && !state.indexDirty) activateDesktopLibrary(state.desktopLibraryId).catch(() => {});
+      }, 4000);
+    });
     byId('desktop-library').hidden = false;
     byId('input-folder').hidden = true;
     byId('folder-input').hidden = true;
@@ -285,7 +307,15 @@
       const button = make('button', 'tree-button'); button.title = node.path || state.root;
       button.append(make('span', '', node.path ? node.name : state.root), make('span', '', formatNumber(node.count)));
       button.addEventListener('click', () => { state.folder = node.path; byId('folder-filter').value = node.path; state.collection = ''; setView('folders'); document.querySelectorAll('.tree-button.selected').forEach(item => item.classList.remove('selected')); button.classList.add('selected'); closeSidebar(); });
-      row.append(toggle, button); wrapper.append(row);
+      row.append(toggle, button);
+      if (state.desktopLibraryId && node.path) {
+        const rename = make('button', 'tree-action', '✎'); rename.title = `Rename ${node.name}`; rename.setAttribute('aria-label', `Rename ${node.name}`);
+        rename.addEventListener('click', () => openFolderDialog('rename', node));
+        const move = make('button', 'tree-action', '⇢'); move.title = `Move ${node.name}`; move.setAttribute('aria-label', `Move ${node.name}`);
+        move.addEventListener('click', () => openFolderDialog('move', node));
+        row.append(rename, move);
+      }
+      wrapper.append(row);
       if (node.children.length) {
         const children = make('div', 'tree-children'); children.hidden = true; let built = false;
         toggle.addEventListener('click', () => { if (!built) { node.children.sort((first, second) => collator.compare(first.name, second.name)).forEach(child => children.append(branch(child))); built = true; } children.hidden = !children.hidden; toggle.textContent = children.hidden ? '▸' : '▾'; toggle.setAttribute('aria-expanded', String(!children.hidden)); });
@@ -297,16 +327,76 @@
     container.append(branch(state.folders.get('')));
   }
 
+  function openFolderDialog(mode, node) {
+    if (state.busy) { announce('Wait for the current scan to finish first.'); return; }
+    const parentPath = node.path.includes('/') ? node.path.slice(0, node.path.lastIndexOf('/')) : '';
+    const overlay = make('div', 'folder-dialog-backdrop'); const box = make('form', 'folder-dialog');
+    box.setAttribute('role', 'dialog'); box.setAttribute('aria-label', mode === 'rename' ? 'Rename folder' : 'Move folder');
+    box.append(make('h3', '', mode === 'rename' ? `Rename "${node.name}"` : `Move "${node.name}"`));
+    let field;
+    if (mode === 'rename') { field = make('input'); field.value = node.name; field.maxLength = 120; field.setAttribute('aria-label', 'New folder name'); }
+    else {
+      field = make('select'); field.setAttribute('aria-label', 'Destination folder');
+      field.add(new Option(`${state.root || 'Library root'} (top level)`, ''));
+      [...state.folders.keys()].filter(path => path && path !== node.path && !path.startsWith(`${node.path}/`) && path !== parentPath).sort(collator.compare).forEach(path => field.add(new Option(path, path)));
+      if (parentPath === '') field.options[0].disabled = true;
+    }
+    const message = make('p', 'folder-dialog-error'); message.setAttribute('role', 'alert');
+    const actions = make('div', 'folder-dialog-actions'); const cancel = make('button', '', 'Cancel'); cancel.type = 'button';
+    const submit = make('button', 'primary', mode === 'rename' ? 'Rename' : 'Move'); submit.type = 'submit';
+    actions.append(cancel, submit); box.append(field, make('p', 'muted', 'This changes the real folder on disk. Tags, favorites and albums are kept.'), message, actions); overlay.append(box); document.body.append(overlay);
+    const close = () => { overlay.remove(); };
+    cancel.addEventListener('click', close);
+    overlay.addEventListener('keydown', event => { if (event.key === 'Escape') close(); });
+    box.addEventListener('submit', async event => {
+      event.preventDefault();
+      const to = mode === 'rename' ? [parentPath, field.value.trim()].filter(Boolean).join('/') : [field.value, node.name].filter(Boolean).join('/');
+      if (mode === 'rename' && (!field.value.trim() || /[\\/]/.test(field.value))) { message.textContent = 'Enter a name without slashes.'; return; }
+      if (to === node.path) { close(); return; }
+      submit.disabled = true;
+      try {
+        if (state.indexDirty) await persistDesktopIndexNow();
+        await releaseOpenMedia();
+        await window.desktopLibrary.moveFolder(state.desktopLibraryId, node.path, to);
+        close();
+        state.folder = '';
+        await activateDesktopLibrary(state.desktopLibraryId);
+        announce(`${mode === 'rename' ? 'Renamed' : 'Moved'} "${node.name}" to "${to}".`);
+      } catch (error) {
+        submit.disabled = false;
+        message.textContent = String(error.message || error).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
+      }
+    });
+    field.focus(); if (field.select) field.select();
+  }
+
+  const kindLabels = { '': 'items', photo: 'photos', video: 'videos', document: 'documents' };
   function populateFilters() {
     const folderSelect = byId('folder-filter'); folderSelect.replaceChildren(new Option('All folders', ''));
     [...state.folders.keys()].filter(Boolean).sort(collator.compare).forEach(path => folderSelect.add(new Option(path, path)));
+    populateFormats(); updateKindCounts();
+  }
+  function populateFormats() {
     const typeSelect = byId('type-filter'); typeSelect.replaceChildren(new Option('All formats', ''));
-    [...new Set(state.photos.map(photo => photo.type))].sort().forEach(type => typeSelect.add(new Option(type.toUpperCase(), type)));
+    [...new Set(state.photos.filter(photo => !state.kind || kindOf(photo) === state.kind).map(photo => photo.type))].sort().forEach(type => typeSelect.add(new Option(type.toUpperCase(), type)));
+  }
+  function updateKindCounts() {
+    const counts = { '': state.photos.length, photo: 0, video: 0, document: 0 };
+    for (const photo of state.photos) counts[kindOf(photo)]++;
+    document.querySelectorAll('#kind-tabs button').forEach(button => { button.querySelector('span').textContent = formatNumber(counts[button.dataset.kind]); button.setAttribute('aria-pressed', String(button.dataset.kind === state.kind)); button.classList.toggle('active', button.dataset.kind === state.kind); });
+  }
+  function setKind(kind) {
+    state.kind = kind;
+    if (state.view === 'videos' || state.view === 'documents') { state.view = 'photos'; document.querySelectorAll('[data-view]').forEach(button => { button.classList.toggle('active', button.dataset.view === 'photos'); button.setAttribute('aria-current', button.dataset.view === 'photos' ? 'page' : 'false'); }); }
+    populateFormats(); updateKindCounts(); applyFilters();
   }
 
+  const kindForView = view => view === 'photos' ? 'photo' : view === 'videos' ? 'video' : view === 'documents' ? 'document' : '';
   function setView(view) {
     if (state.busy) return;
     state.view = view; state.collection = ''; state.page = 0;
+    state.kind = kindForView(view);
+    populateFormats(); updateKindCounts(); byId('type-filter').value = '';
     if (view !== 'folders') { state.folder = ''; byId('folder-filter').value = ''; }
     document.querySelectorAll('[data-view]').forEach(button => { button.classList.toggle('active', button.dataset.view === view); button.setAttribute('aria-current', button.dataset.view === view ? 'page' : 'false'); });
     if (view === 'recent') byId('sort').value = 'added';
@@ -348,6 +438,7 @@
     state.filtered = state.photos.filter(photo => {
       const saved = meta(photo);
       if (state.folder && photo.folder !== state.folder && !photo.folder.startsWith(`${state.folder}/`)) return false;
+      if (state.kind && kindOf(photo) !== state.kind) return false;
       if (type && photo.type !== type) return false;
       if (state.view === 'favorites' && !saved.favorite) return false;
       if (state.view === 'tags' && (!saved.tags.length || (state.collection && !saved.tags.includes(state.collection)))) return false;
@@ -368,17 +459,18 @@
 
   function renderGrid() {
     releaseGrid(); const generation = state.generation; const gallery = byId('gallery'); gallery.replaceChildren();
-    const titles = { photos: 'Photos', timeline: 'Timeline', folders: 'Folders', albums: 'Albums', tags: 'Tags', favorites: 'Favorites', recent: 'Recently Added' };
+    const titles = { photos: 'Photos', timeline: 'Timeline', folders: 'Folders', albums: 'Albums', tags: 'Tags', favorites: 'Favorites', recent: 'Recently Added', videos: 'Videos', documents: 'Documents' };
     const selectedAlbum = state.view === 'albums' ? state.index.albums.find(album => album.id === state.collection)?.name : '';
     byId('view-title').textContent = selectedAlbum || (state.view === 'tags' ? state.collection : '') || state.folder.split('/').pop() || titles[state.view];
     byId('breadcrumb').textContent = state.root ? [state.root, state.folder].filter(Boolean).join(' / ') : 'LIBRARY';
-    byId('result-count').textContent = formatNumber(state.filtered.length) + ' photos' + (state.photos.length ? ' / ' + formatNumber(state.photos.length) + ' in library' : '');
-    byId('empty-state').hidden = !!state.filtered.length; byId('empty-message').textContent = state.photos.length ? 'No photos match this view' : state.index.entries.length && !state.scanCompleted ? 'Index imported; open the matching folder to access and reconcile photos' : state.index.entries.length ? 'No accessible photos in this scan; existing index entries are retained' : state.root ? 'No supported image files found' : 'No folder connected'; byId('empty-open').hidden = !!state.photos.length;
+    byId('result-count').textContent = formatNumber(state.filtered.length) + ' ' + kindLabels[state.kind] + (state.photos.length ? ' / ' + formatNumber(state.photos.length) + ' in library' : '');
+    byId('empty-state').hidden = !!state.filtered.length; byId('empty-message').textContent = state.photos.length ? 'No photos match this view' : state.index.entries.length && !state.scanCompleted ? 'Index imported; open the matching folder to access and reconcile photos' : state.index.entries.length ? 'No accessible photos in this scan; existing index entries are retained' : state.root ? 'No supported photo or video files found' : 'No folder connected'; byId('empty-open').hidden = !!state.photos.length;
     byId('pagination').hidden = !state.filtered.length;
     byId('page-label').textContent = `Page ${state.page + 1} of ${Math.max(1, Math.ceil(state.filtered.length / pageSize))}`;
     byId('previous-page').disabled = state.page === 0; byId('next-page').disabled = (state.page + 1) * pageSize >= state.filtered.length;
     observer = new IntersectionObserver(entries => { for (const entry of entries) if (entry.isIntersecting) { observer.unobserve(entry.target); enqueueThumbnail(entry.target, generation); } }, { rootMargin: '180px' });
     const pagePhotos = state.filtered.slice(state.page * pageSize, (state.page + 1) * pageSize);
+    if (state.view === 'timeline') { byId('pagination').hidden = true; renderRoadmap(gallery, state.filtered); return; }
     const groups = new Map();
     for (const photo of pagePhotos) {
       const key = state.view === 'timeline' ? (photo.date !== null ? new Date(photo.date).toISOString().slice(0, 7) : 'Unknown date') : '';
@@ -387,16 +479,51 @@
     for (const [key, photos] of groups) {
       if (key) { const heading = make('h2', 'group-heading', key === 'Unknown date' ? key : new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${key}-01T00:00:00Z`))); heading.append(make('small', '', key === 'Unknown date' ? 'No validated filename date' : 'From filename · not verified capture date')); gallery.append(heading); }
       const grid = make('div', 'photo-grid');
-      for (const photo of photos) {
-        const card = make('article', 'photo-card'); const button = make('button', 'photo-open'); button.setAttribute('aria-label', `Open ${photo.path}`); button.title = photo.path; button.photo = photo;
-        button.append(make('span', 'photo-placeholder', 'Loading preview…')); button.addEventListener('click', () => openViewer(photo, button));
-        const favorite = make('button', 'card-favorite'); favoriteIcon(favorite, !!meta(photo).favorite); favorite.setAttribute('aria-label', `Favorite ${photo.name}`); favorite.title = 'Toggle favorite'; favorite.addEventListener('click', () => { toggleFavorite(photo); if (state.view === 'favorites') applyFilters(); else favoriteIcon(favorite, !!meta(photo).favorite); });
-        card.append(button, make('span', 'photo-caption', photo.name), favorite);
-        if (['heic', 'heif', 'dng', 'tif', 'tiff'].includes(photo.type)) card.append(make('span', 'format-badge', photo.type.toUpperCase()));
-        grid.append(card); observer.observe(button);
-      }
+      for (const photo of photos) grid.append(createCard(photo));
       gallery.append(grid);
     }
+  }
+
+  function createCard(photo) {
+    const card = make('article', 'photo-card'); const button = make('button', 'photo-open'); button.setAttribute('aria-label', `Open ${photo.path}`); button.title = photo.path; button.photo = photo;
+    button.append(make('span', 'photo-placeholder', 'Loading preview…')); button.addEventListener('click', () => openViewer(photo, button));
+    const favorite = make('button', 'card-favorite'); favoriteIcon(favorite, !!meta(photo).favorite); favorite.setAttribute('aria-label', `Favorite ${photo.name}`); favorite.title = 'Toggle favorite'; favorite.addEventListener('click', () => { toggleFavorite(photo); if (state.view === 'favorites') applyFilters(); else favoriteIcon(favorite, !!meta(photo).favorite); });
+    card.append(button, make('span', 'photo-caption', photo.name), favorite);
+    if (isVideo(photo)) card.append(make('span', 'video-badge', `▶ ${photo.type.toUpperCase()}`));
+    else if (['heic', 'heif', 'dng', 'tif', 'tiff'].includes(photo.type)) card.append(make('span', 'format-badge', photo.type.toUpperCase()));
+    observer.observe(button); return card;
+  }
+
+  function renderRoadmap(gallery, photos) {
+    const years = new Map();
+    for (const photo of photos) {
+      const date = photo.date !== null ? new Date(photo.date) : null;
+      const year = date ? String(date.getUTCFullYear()) : 'Undated'; const month = date ? date.getUTCMonth() : -1;
+      if (!years.has(year)) years.set(year, new Map()); const months = years.get(year);
+      if (!months.has(month)) months.set(month, []); months.get(month).push(photo);
+    }
+    const roadmap = make('div', 'roadmap'); const nav = make('nav', 'roadmap-years'); nav.setAttribute('aria-label', 'Jump to year');
+    const previewCount = 6; let side = 0;
+    for (const [year, months] of years) {
+      const total = [...months.values()].reduce((sum, list) => sum + list.length, 0);
+      const chip = make('button', 'year-chip', year); chip.append(make('small', '', String(total)));
+      const section = make('section', 'roadmap-year'); section.id = `year-${year}`;
+      chip.addEventListener('click', () => section.scrollIntoView({ behavior: 'smooth', block: 'start' })); nav.append(chip);
+      const marker = make('h2', 'year-marker', year); marker.append(make('small', '', `${formatNumber(total)} items`)); section.append(marker);
+      for (const [month, list] of months) {
+        const item = make('article', 'roadmap-month ' + (side++ % 2 ? 'right' : 'left'));
+        const name = month < 0 ? 'No filename date' : new Intl.DateTimeFormat(undefined, { month: 'long', timeZone: 'UTC' }).format(new Date(Date.UTC(2000, month, 1)));
+        const header = make('button', 'month-header'); header.append(make('strong', '', name), make('small', '', `${formatNumber(list.length)} item${list.length === 1 ? '' : 's'}`));
+        const grid = make('div', 'photo-grid month-strip'); let expanded = false;
+        const fill = () => { grid.replaceChildren(); for (const photo of expanded ? list : list.slice(0, previewCount)) grid.append(createCard(photo)); };
+        header.setAttribute('aria-expanded', 'false'); header.addEventListener('click', () => { expanded = !expanded; header.setAttribute('aria-expanded', String(expanded)); item.classList.toggle('expanded', expanded); fill(); });
+        fill(); item.append(header, grid);
+        if (list.length > previewCount) { const more = make('button', 'month-more', `+${list.length - previewCount} more`); more.addEventListener('click', () => header.click()); more.hidden = false; item.append(more); }
+        section.append(item);
+      }
+      roadmap.append(section);
+    }
+    gallery.append(nav, roadmap);
   }
 
   const thumbnailQueue = []; let thumbnailWorkers = 0;
@@ -429,7 +556,33 @@
     await Promise.race([image.decode(), new Promise((resolve, reject) => setTimeout(() => reject(new Error('Preview timed out')), 20000))]);
     return image;
   }
+  async function videoSource(photo) {
+    if (window.desktopLibrary) return { url: `still-media://${state.desktopLibraryId}/${photo.path.split('/').map(encodeURIComponent).join('/')}`, revoke: false };
+    return { url: URL.createObjectURL(await getFile(photo)), revoke: true };
+  }
+  const formatDuration = seconds => { const total = Math.round(seconds); const h = Math.floor(total / 3600); const m = Math.floor(total % 3600 / 60); const s = String(total % 60).padStart(2, '0'); return h ? `${h}:${String(m).padStart(2, '0')}:${s}` : `${m}:${s}`; };
+  async function loadVideoThumbnail(button, generation) {
+    const photo = button.photo; let source;
+    try {
+      source = await videoSource(photo); if (generation !== state.generation) { if (source.revoke) URL.revokeObjectURL(source.url); return; }
+      if (source.revoke) state.gridUrls.add(source.url);
+      const video = make('video'); video.muted = true; video.preload = 'metadata'; video.playsInline = true; video.tabIndex = -1; video.setAttribute('aria-label', photo.name);
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('Preview timed out')), 20000);
+        video.addEventListener('error', () => { clearTimeout(timer); reject(new Error('Unsupported video')); }, { once: true });
+        video.addEventListener('loadedmetadata', () => { video.currentTime = Math.min(1, (video.duration || 0) / 2); }, { once: true });
+        video.addEventListener('seeked', () => { clearTimeout(timer); resolve(); }, { once: true });
+        video.src = source.url;
+      });
+      if (generation !== state.generation) return;
+      photo.dimensions = { width: video.videoWidth, height: video.videoHeight }; photo.duration = video.duration;
+      button.replaceChildren(video);
+      const badge = button.parentElement?.querySelector('.video-badge'); if (badge && Number.isFinite(video.duration)) badge.textContent = `▶ ${formatDuration(video.duration)}`;
+    } catch { if (generation === state.generation) button.replaceChildren(make('span', 'photo-placeholder', `${photo.type.toUpperCase()} · Preview unavailable`)); }
+  }
   async function loadThumbnail(button, generation) {
+    if (isDocument(button.photo)) { button.replaceChildren(make('span', 'doc-tile', button.photo.type.toUpperCase())); return; }
+    if (isVideo(button.photo)) return loadVideoThumbnail(button, generation);
     let original; let thumbnail;
     try {
       const photo = button.photo; const file = await getFile(photo); if (generation !== state.generation) return;
@@ -530,17 +683,48 @@
     syncIndexMap(); markIndexChanged(); renderCollections(); applyFilters(); byId('missing-dialog').close();
     announce(`${formatNumber(count)} missing entries removed from the in-memory index. Export JSON to keep this change.`);
   }
+  const brokenViewerIds = new Set();
   async function openViewer(photo, trigger) {
-    returnFocus = trigger; state.viewerList = [...state.filtered]; state.viewerIndex = state.viewerList.indexOf(photo); byId('viewer').showModal(); showViewerPhoto();
+    returnFocus = trigger; brokenViewerIds.clear(); state.viewerDir = 1; state.viewerList = [...state.filtered]; state.viewerIndex = state.viewerList.indexOf(photo); byId('viewer').showModal(); showViewerPhoto();
   }
+  function resetVideo() {
+    byId('large-document')?.remove();
+    const video = byId('large-video'); if (!video) return; video.pause(); video.removeAttribute('src'); video.load(); video.remove();
+  }
+  async function showViewerDocument(photo, token) {
+    byId('zoom-in').disabled = true; byId('zoom-out').disabled = true;
+    let source;
+    try { source = await videoSource(photo); }
+    catch { if (token === state.viewerToken) byId('viewer-state').textContent = 'This file is no longer readable. Reconnect the folder and grant access again; the index entry is preserved.'; return; }
+    if (token !== state.viewerToken) { if (source.revoke) URL.revokeObjectURL(source.url); return; }
+    if (source.revoke) state.viewerUrls.set(photo.id, source.url);
+    const frame = make('iframe'); frame.id = 'large-document'; frame.title = photo.name; frame.addEventListener('load', () => { if (token === state.viewerToken) byId('viewer-state').textContent = ''; });
+    frame.src = source.url; byId('image-stage').append(frame);
+  }
+  async function showViewerVideo(photo, token) {
+    byId('zoom-in').disabled = true; byId('zoom-out').disabled = true;
+    let source;
+    try { source = await videoSource(photo); }
+    catch { if (token === state.viewerToken) byId('viewer-state').textContent = 'This file is no longer readable. Reconnect the folder and grant access again; the index entry is preserved.'; return; }
+    if (token !== state.viewerToken) { if (source.revoke) URL.revokeObjectURL(source.url); return; }
+    if (source.revoke) state.viewerUrls.set(photo.id, source.url);
+    const video = make('video'); video.id = 'large-video'; video.controls = true; video.autoplay = true; video.playsInline = true; video.setAttribute('aria-label', photo.name);
+    video.addEventListener('loadedmetadata', () => { if (token !== state.viewerToken) return; photo.dimensions = { width: video.videoWidth, height: video.videoHeight }; photo.duration = video.duration; byId('viewer-state').textContent = ''; updateDetails(photo); });
+    video.addEventListener('error', () => { if (token === state.viewerToken) byId('viewer-state').textContent = 'This video cannot be played here. Its format or codec (for example HEVC/H.265 or AVI) may be unsupported; the file is unchanged.'; });
+    video.src = source.url; byId('image-stage').append(video); video.focus({ preventScroll: true });
+  }
+  function leavePhotoSwipe() { const instance = photoSwipe; if (!instance) return; leavingPhotoSwipe = instance; photoSwipe = null; instance.destroy(); }
   async function showViewerPhoto() {
     const token = ++state.viewerToken; const photo = state.viewerList[state.viewerIndex]; if (!photo) return;
-    state.zoom = 1; state.panX = 0; state.panY = 0; updateTransform();
+    state.zoom = 1; state.panX = 0; state.panY = 0; updateTransform(); resetVideo();
+    byId('zoom-in').disabled = false; byId('zoom-out').disabled = false;
     for (const url of state.viewerUrls.values()) URL.revokeObjectURL(url); state.viewerUrls.clear();
     const image = byId('large-image'); image.removeAttribute('src'); image.hidden = true;
-    byId('viewer-state').textContent = 'Loading image…'; byId('viewer-position').textContent = `${state.viewerIndex + 1} / ${state.viewerList.length}`;
+    byId('viewer-state').textContent = isVideo(photo) ? 'Loading video…' : isDocument(photo) ? 'Loading document…' : 'Loading image…'; byId('viewer-position').textContent = `${state.viewerIndex + 1} / ${state.viewerList.length}`;
     byId('viewer-prev').disabled = state.viewerIndex === 0; byId('viewer-next').disabled = state.viewerIndex === state.viewerList.length - 1;
     byId('viewer-engine').replaceChildren(); updateDetails(photo);
+    if (isVideo(photo)) { await showViewerVideo(photo, token); return; }
+    if (isDocument(photo)) { await showViewerDocument(photo, token); return; }
     let file;
     try {
       file = await getFile(photo);
@@ -555,6 +739,7 @@
       photo.dimensions = { width: decoded.naturalWidth, height: decoded.naturalHeight }; image.src = url; image.alt = photo.name; image.hidden = false; byId('viewer-state').textContent = ''; updateDetails(photo);
       launchPhotoSwipe();
     } catch {
+      if (token === state.viewerToken && !['heic', 'heif'].includes(photo.type) && state.viewerList.length > 1) { brokenViewerIds.add(photo.id); skipBrokenPhoto(); return; }
       if (token === state.viewerToken) {
         byId('viewer-state').textContent = ['heic', 'heif'].includes(photo.type)
           ? 'HEIC/HEIF preview is unavailable in this browser. The photo is indexed, but its pixels cannot be decoded here. Try a HEIC-capable viewer or add a separate JPEG copy; the original stays unchanged.'
@@ -568,7 +753,7 @@
     byId('detail-name').textContent = photo.name; const details = byId('detail-metadata'); details.replaceChildren();
     const sizeLabel = photo.size === null ? 'Read on demand' : (photo.size / 1048576).toFixed(2) + ' MB';
     const rows = [['Relative path', `${state.root}/${photo.path}`], ['Dimensions', photo.dimensions ? `${photo.dimensions.width} × ${photo.dimensions.height}` : 'Unavailable until decoded'], ['Format / size', photo.type.toUpperCase() + ' / ' + sizeLabel], ['Filename date (unverified)', photo.date !== null ? new Date(photo.date).toISOString().slice(0, 10) : 'Unknown'], ['Filesystem modified (not capture date)', photo.modified ? new Date(photo.modified).toLocaleString() : 'Read on demand'], ['EXIF capture date', photo.dateTaken || 'Unavailable'], ['Added to this index', new Date(photo.added).toLocaleString()]];
-    for (const [label, value] of rows) details.append(make('dt', '', label), make('dd', '', value));
+    for (const [label, value] of photo.duration ? [...rows.slice(0, 2), ['Duration', formatDuration(photo.duration)], ...rows.slice(2)] : rows) details.append(make('dt', '', label), make('dd', '', value));
     favoriteIcon(byId('favorite'), !!meta(photo).favorite);
     const albumNames = new Map(state.index.albums.map(album => [album.id, album.name]));
     byId('photo-tags').value = meta(photo).tags.join(', '); byId('photo-albums').value = meta(photo).albumIds.map(id => albumNames.get(id)).filter(Boolean).join(', '); byId('detail-status').textContent = '';
@@ -577,8 +762,16 @@
   }
   const splitValues = text => [...new Set(text.split(',').map(value => value.trim()).filter(Boolean))].slice(0, 50);
   function updateTransform() { byId('large-image').style.transform = `translate(${state.panX}px, ${state.panY}px) scale(${state.zoom})`; }
-  function navigateViewer(offset) { const index = state.viewerIndex + offset; if (index >= 0 && index < state.viewerList.length) { if (photoSwipe) photoSwipe.goTo(index); else { state.viewerIndex = index; showViewerPhoto(); } } }
-  function closeViewer() { byId('viewer').close(); if (photoSwipe) photoSwipe.close(); state.viewerToken++; byId('large-image').removeAttribute('src'); for (const url of state.viewerUrls.values()) URL.revokeObjectURL(url); state.viewerUrls.clear(); const page = state.page; applyFilters(); state.page = Math.min(page, Math.max(0, Math.ceil(state.filtered.length / pageSize) - 1)); renderGrid(); byId('view-title').setAttribute('tabindex', '-1'); returnFocus?.isConnected ? returnFocus.focus() : byId('view-title').focus(); }
+  function skipBrokenPhoto() {
+    const broken = state.viewerList[state.viewerIndex]; if (!broken || state.viewerList.length < 2) return;
+    const forward = state.viewerDir !== -1;
+    state.viewerList.splice(state.viewerIndex, 1);
+    if (forward ? state.viewerIndex >= state.viewerList.length : false) state.viewerIndex = state.viewerList.length - 1;
+    else if (!forward) state.viewerIndex = Math.max(0, state.viewerIndex - 1);
+    leavePhotoSwipe(); showViewerPhoto();
+  }
+  function navigateViewer(offset) { state.viewerDir = offset < 0 ? -1 : 1; const index = state.viewerIndex + offset; if (index >= 0 && index < state.viewerList.length) { if (photoSwipe) photoSwipe.goTo(index); else { state.viewerIndex = index; showViewerPhoto(); } } }
+  function closeViewer() { byId('viewer').close(); if (photoSwipe) photoSwipe.close(); resetVideo(); state.viewerToken++; byId('large-image').removeAttribute('src'); for (const url of state.viewerUrls.values()) URL.revokeObjectURL(url); state.viewerUrls.clear(); const page = state.page; applyFilters(); state.page = Math.min(page, Math.max(0, Math.ceil(state.filtered.length / pageSize) - 1)); renderGrid(); byId('view-title').setAttribute('tabindex', '-1'); returnFocus?.isConnected ? returnFocus.focus() : byId('view-title').focus(); }
 
   async function loadPhotoSwipe() {
     if (!photoSwipePromise) photoSwipePromise = new Promise((resolve, reject) => {
@@ -599,12 +792,14 @@
       const PhotoSwipe = await Promise.race([loadPhotoSwipe(), new Promise((resolve, reject) => setTimeout(() => reject(new Error('Viewer offline')), 8000))]);
       if (token !== state.viewerToken || !byId('viewer').open) return;
       photoSwipe = new PhotoSwipe({ appendToEl: byId('image-stage'), getViewportSizeFn: () => ({ x: byId('image-stage').clientWidth, y: byId('image-stage').clientHeight }), dataSource: state.viewerList, index: state.viewerIndex, loop: false, preload: [0, 0], showHideAnimationType: 'none', bgOpacity: 1, trapFocus: false, returnFocus: false, escKey: false });
+      const instance = photoSwipe;
       photoSwipe.addFilter('itemData', (data, index) => {
         const photo = state.viewerList[index]; const dimensions = photo.dimensions || { width: 1600, height: 1200 };
         return { src: state.viewerUrls.get(photo.id) || '', width: dimensions.width, height: dimensions.height, alt: photo.name, photo, index };
       });
       photoSwipe.on('contentLoad', event => {
         event.preventDefault(); const content = event.content; const photo = content.data.photo;
+        if (!isImage(photo)) { content.element = make('div'); content.onError(); return; }
         const element = make('img'); element.alt = photo.name; element.style.cssText = 'width:100%;height:100%;object-fit:contain'; content.element = element; content.state = 'loading';
         (async () => {
           try {
@@ -613,14 +808,21 @@
             const decoded = await decodeImage(url); if (!photoSwipe) return;
             photo.dimensions = { width: decoded.naturalWidth, height: decoded.naturalHeight }; content.data.width = decoded.naturalWidth; content.data.height = decoded.naturalHeight; content.width = decoded.naturalWidth; content.height = decoded.naturalHeight; element.src = url; content.onLoaded();
             if (photoSwipe.currIndex === content.data.index) { updateDetails(photo); photoSwipe.currSlide?.updateContentSize(true); photoSwipe.currSlide?.zoomAndPanToInitial(); }
-          } catch { content.onError(); }
+          } catch { content.onError(); if (!['heic', 'heif'].includes(photo.type)) { brokenViewerIds.add(photo.id); if (photoSwipe && photoSwipe.currIndex === content.data.index) skipBrokenPhoto(); } }
         })();
       });
       photoSwipe.on('change', () => {
+        state.viewerDir = photoSwipe.currIndex < state.viewerIndex ? -1 : 1;
+        if (brokenViewerIds.has(state.viewerList[photoSwipe.currIndex]?.id)) { state.viewerIndex = photoSwipe.currIndex; setTimeout(skipBrokenPhoto, 0); return; }
+        if (!isImage(state.viewerList[photoSwipe.currIndex])) {
+          state.viewerIndex = photoSwipe.currIndex;
+          setTimeout(() => { leavePhotoSwipe(); showViewerPhoto(); }, 0);
+          return;
+        }
         state.viewerIndex = photoSwipe.currIndex; state.viewerToken++; updateDetails(state.viewerList[state.viewerIndex]); byId('viewer-position').textContent = `${state.viewerIndex + 1} / ${state.viewerList.length}`;
       });
       photoSwipe.on('contentDestroy', event => { const id = event.content.data.photo?.id; const url = state.viewerUrls.get(id); if (url && id !== state.viewerList[state.viewerIndex]?.id) { URL.revokeObjectURL(url); state.viewerUrls.delete(id); } });
-      photoSwipe.on('destroy', () => { photoSwipe = null; if (byId('viewer').open) closeViewer(); });
+      photoSwipe.on('destroy', () => { if (photoSwipe === instance) photoSwipe = null; if (byId('viewer').open && leavingPhotoSwipe !== instance) closeViewer(); });
       photoSwipe.init(); byId('viewer-engine').textContent = 'PhotoSwipe 5.4.4';
     } catch { byId('viewer-engine').textContent = 'Offline viewer'; }
   }
@@ -633,12 +835,21 @@
   let searchTimer; byId('search').addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(applyFilters, 180); });
   for (const id of ['folder-filter', 'type-filter']) byId(id).addEventListener('change', applyFilters);
   byId('sort').addEventListener('change', () => { state.metadataPass++; applyFilters(); savePreferences(); if (byId('sort').value === 'modified') hydrateModifiedDates(); });
-  byId('reset').addEventListener('click', () => { byId('search').value = ''; byId('folder-filter').value = ''; byId('type-filter').value = ''; byId('sort').value = 'name'; state.collection = ''; renderCollections(); applyFilters(); });
+  byId('reset').addEventListener('click', () => { byId('search').value = ''; byId('folder-filter').value = ''; state.kind = kindForView(state.view); populateFormats(); updateKindCounts(); byId('type-filter').value = ''; byId('sort').value = 'name'; state.collection = ''; renderCollections(); applyFilters(); });
+  byId('kind-tabs').addEventListener('click', event => { const button = event.target.closest('[data-kind]'); if (button) setKind(button.dataset.kind); });
   byId('show-names').addEventListener('change', event => { byId('gallery').classList.toggle('show-names', event.target.checked); savePreferences(); });
   byId('previous-page').addEventListener('click', () => { state.page--; renderGrid(); }); byId('next-page').addEventListener('click', () => { state.page++; renderGrid(); });
   byId('viewer-close').addEventListener('click', closeViewer); byId('viewer').addEventListener('cancel', event => { event.preventDefault(); closeViewer(); });
   byId('viewer').addEventListener('keydown', event => { if (event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); closeViewer(); } }, true);
   byId('viewer-prev').addEventListener('click', () => navigateViewer(-1)); byId('viewer-next').addEventListener('click', () => navigateViewer(1));
+  function setDetailsHidden(hidden) {
+    byId('viewer').classList.toggle('details-hidden', hidden);
+    const button = byId('toggle-details'); button.setAttribute('aria-pressed', String(!hidden)); button.title = button.ariaLabel = hidden ? 'Show details' : 'Hide details';
+    try { localStorage.setItem('still-details-hidden', hidden ? '1' : '0'); } catch {}
+    setTimeout(() => window.dispatchEvent(new Event('resize')), 50);
+  }
+  try { setDetailsHidden(localStorage.getItem('still-details-hidden') === '1'); } catch {}
+  byId('toggle-details').addEventListener('click', () => setDetailsHidden(!byId('viewer').classList.contains('details-hidden')));
   byId('favorite').addEventListener('click', () => { const photo = state.viewerList[state.viewerIndex]; toggleFavorite(photo); updateDetails(photo); });
   byId('save-details').addEventListener('click', () => {
     const photo = state.viewerList[state.viewerIndex]; const entry = state.indexById.get(photo.id); if (!entry) return;
@@ -653,9 +864,18 @@
   byId('review-missing').addEventListener('click', openMissingReview);
   byId('keep-missing').addEventListener('click', () => byId('missing-dialog').close());
   byId('remove-missing').addEventListener('click', removeMissingEntries);
+  byId('image-stage').addEventListener('wheel', event => {
+    if (byId('large-image').hidden || byId('large-video') || byId('large-document')) return;
+    event.preventDefault(); event.stopPropagation();
+    const factor = event.deltaY < 0 ? 1.15 : 1 / 1.15;
+    if (photoSwipe?.currSlide) {
+      const slide = photoSwipe.currSlide; const rect = byId('image-stage').getBoundingClientRect();
+      slide.zoomTo(Math.min(slide.zoomLevels.max * 4, Math.max(slide.zoomLevels.min, slide.currZoomLevel * factor)), { x: event.clientX - rect.left, y: event.clientY - rect.top }, 0);
+    } else { state.zoom = Math.min(8, Math.max(1, state.zoom * factor)); if (state.zoom === 1) { state.panX = 0; state.panY = 0; } updateTransform(); }
+  }, { passive: false, capture: true });
   byId('zoom-in').addEventListener('click', () => { if (photoSwipe) photoSwipe.currSlide?.zoomTo(Math.min(8, (photoSwipe.currSlide.currZoomLevel || 1) * 1.5)); else { state.zoom = Math.min(8, state.zoom * 1.5); updateTransform(); } });
   byId('zoom-out').addEventListener('click', () => { if (photoSwipe) photoSwipe.currSlide?.zoomTo(Math.max(0.1, (photoSwipe.currSlide.currZoomLevel || 1) / 1.5)); else { state.zoom = Math.max(1, state.zoom / 1.5); if (state.zoom === 1) { state.panX = 0; state.panY = 0; } updateTransform(); } });
-  byId('viewer').addEventListener('keydown', event => { if (photoSwipe || (/INPUT|TEXTAREA/).test(event.target.tagName)) return; if (event.key === 'ArrowLeft') { event.preventDefault(); navigateViewer(-1); } if (event.key === 'ArrowRight') { event.preventDefault(); navigateViewer(1); } });
+  byId('viewer').addEventListener('keydown', event => { if (photoSwipe || (/INPUT|TEXTAREA|VIDEO/).test(event.target.tagName)) return; if (event.key === 'ArrowLeft') { event.preventDefault(); navigateViewer(-1); } if (event.key === 'ArrowRight') { event.preventDefault(); navigateViewer(1); } });
   let drag; const panArea = byId('pan-area');
   panArea.addEventListener('pointerdown', event => { drag = { x: event.clientX, y: event.clientY, startX: state.panX, startY: state.panY }; panArea.setPointerCapture(event.pointerId); });
   panArea.addEventListener('pointermove', event => { if (drag && state.zoom > 1) { state.panX = drag.startX + event.clientX - drag.x; state.panY = drag.startY + event.clientY - drag.y; updateTransform(); } });
@@ -670,7 +890,7 @@
     if (!window.desktopLibrary) return;
     try { await window.desktopLibrary.toggleFullscreen(); } catch (error) { announce(`Could not toggle fullscreen: ${error.message}`); }
   });
-  const navigationIcons = { photos: 'Images', timeline: 'CalendarDays', folders: 'Folder', albums: 'BookImage', tags: 'Tags', favorites: 'Heart', recent: 'Clock3' };
+  const navigationIcons = { photos: 'Images', timeline: 'CalendarDays', folders: 'Folder', albums: 'BookImage', tags: 'Tags', favorites: 'Heart', recent: 'Clock3', videos: 'Film', documents: 'FileText' };
   document.querySelectorAll('[data-view]').forEach(button => button.querySelector('span').replaceChildren(icon(navigationIcons[button.dataset.view])));
   const controlIcons = { 'menu-toggle': 'Menu', 'input-folder': 'FolderOpen', 'grid-mode': 'Grid2X2', 'timeline-mode': 'CalendarDays', 'previous-page': 'ArrowLeft', 'next-page': 'ArrowRight', 'zoom-out': 'ZoomOut', 'zoom-in': 'ZoomIn', 'toggle-fullscreen': 'Maximize', 'viewer-close': 'X', 'viewer-prev': 'ChevronLeft', 'viewer-next': 'ChevronRight', 'export-index': 'Download', 'import-index': 'Upload', 'save-index': 'Save' };
   for (const [id, name] of Object.entries(controlIcons)) byId(id).replaceChildren(icon(name));

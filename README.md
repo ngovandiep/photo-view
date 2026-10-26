@@ -1,8 +1,12 @@
 # Still / Local Photo Library
 
-A personal photo browser built with HTML, CSS, and vanilla JavaScript. It can run as a static browser app or as a Windows Electron desktop app. Both modes read selected photos without changing originals; there is no backend, database server, account, cloud integration, AI classification, or image upload.
+A personal photo browser built with HTML, CSS, and vanilla JavaScript. It can run as a static browser app or as a Windows Electron desktop app. Both modes read selected photos and videos without changing originals; the core app has no backend, database server, cloud integration or AI classification (the optional account server and Wi-Fi sync are described below). Videos (MP4, M4V, MOV, WebM, MKV, OGV, AVI, 3GP) are indexed alongside photos and play in the viewer with the built-in player; playback depends on the codec, so some HEVC/H.265 or AVI files may not play.
 
 For the Windows desktop build and usage instructions, see the [Vietnamese guide](VI_README.md). Electron stores registered folder paths and versioned JSON indexes in its per-user `userData` directory. The desktop app remembers accessible folders between launches and uses native dialogs for folder selection and index backup/restore. Build with `npm install`, `npm start`, and `npm run dist:win` from this directory. The generated installer is unsigned unless you configure code signing.
+
+## Wi-Fi Photo Sync (desktop app)
+
+The desktop app can optionally receive photos from a phone over the local network (HTTPS, QR pairing, per-device revocation, resumable uploads). It is off until you press **Start sync server** in the sidebar's **Wi-Fi Sync** panel. The same server also hosts a **mobile web app**: scan the pairing QR code with the phone camera to browse, search, play and favorite the PC's library live (see "Phone web app" in the doc below). See [docs/WIFI_SYNC.md](docs/WIFI_SYNC.md) for setup, security model and the API.
 
 ## Open
 

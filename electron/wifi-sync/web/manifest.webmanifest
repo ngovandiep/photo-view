@@ -1,0 +1,9 @@
+{
+  "name": "Still Library",
+  "short_name": "Still",
+  "start_url": "/app",
+  "display": "standalone",
+  "background_color": "#fafbfa",
+  "theme_color": "#32654c",
+  "icons": []
+}

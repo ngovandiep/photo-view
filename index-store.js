@@ -185,7 +185,36 @@
     return index;
   }
 
-  const store = { FORMAT, VERSION, create, normalizePath, reconcile, validate, mergeLegacy };
+  // Adds or refreshes one entry without touching the rest of the index.
+  function addPhoto(index, photo, contentHash = null) {
+    const id = normalizePath(photo.path);
+    const previous = index.entries.find(entry => entry.id === id);
+    const entry = createRecord(photo, previous, now());
+    if (contentHash) entry.contentHash = contentHash;
+    const entries = previous ? index.entries.map(item => (item.id === id ? entry : item)) : [...index.entries, entry];
+    return { ...index, updatedAt: now(), entries };
+  }
+
+  // Rewrites every entry under `from` to live under `to`, keeping tags, favorites and albums.
+  function moveFolder(index, from, to) {
+    const source = normalizePath(from);
+    const target = normalizePath(to);
+    if (target === source || target.startsWith(`${source}/`)) throw new Error('A folder cannot be moved into itself.');
+    const moved = index.entries.map(entry => {
+      if (entry.path !== source && !entry.path.startsWith(`${source}/`)) return entry;
+      const next = createRecord({ path: target + entry.path.slice(source.length), size: entry.size, lastModified: entry.lastModified }, entry, entry.firstIndexedAt);
+      next.missing = entry.missing; next.missingSince = entry.missingSince;
+      return next;
+    });
+    const ids = new Set();
+    for (const entry of moved) {
+      if (ids.has(entry.id)) throw new Error('Moving would create duplicate entries.');
+      ids.add(entry.id);
+    }
+    return { index: { ...index, updatedAt: now(), entries: moved }, changed: moved.filter((entry, i) => entry !== index.entries[i]).length };
+  }
+
+  const store = { FORMAT, VERSION, create, normalizePath, reconcile, validate, mergeLegacy, addPhoto, moveFolder };
   if (typeof module !== 'undefined' && module.exports) module.exports = store;
   if (typeof window !== 'undefined') window.PhotoIndexStore = store;
 })();

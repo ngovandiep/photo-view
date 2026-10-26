@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#32654c">
+  <title>Still · This phone</title>
+  <link rel="stylesheet" href="/device.css">
+  <script defer src="/device.js"></script>
+</head>
+<body>
+  <header class="top">
+    <h1>This phone</h1>
+    <div id="select-bar" class="select-bar" hidden>
+      <button id="sel-cancel" type="button" aria-label="Cancel selection">✕</button>
+      <span id="sel-count">0 selected</span>
+      <button id="sel-all" type="button">All</button>
+      <button id="sel-delete" type="button" class="danger">Delete</button>
+    </div>
+  </header>
+  <main>
+    <section id="start">
+      <p>Pick the folders on this phone that hold your media, for example <b>DCIM</b>, <b>Pictures</b> and <b>Movies</b>. Photos and videos from all of them are gathered here and grouped by app (Camera, Screenshots, WhatsApp, Zalo, Messenger…), so you can see what takes space and delete it. Nothing leaves the phone.</p>
+      <button id="pick" type="button" class="primary">Choose a folder on this phone</button>
+      <button id="reopen" type="button" class="secondary" hidden></button>
+      <p id="unsupported" class="note" hidden>This browser cannot manage files on the phone. Use Chrome on Android (version 132 or newer). iPhone and Safari do not allow it.</p>
+    </section>
+    <section id="manager" hidden>
+      <div class="bar">
+        <strong id="folder-name"></strong>
+        <span><button id="add-folder" type="button" class="link">+ Add folder</button><button id="clear" type="button" class="link">Forget</button></span>
+      </div>
+      <div class="tabs" role="tablist">
+        <button data-kind="" class="tab active" type="button">All</button>
+        <button data-kind="photo" class="tab" type="button">Photos</button>
+        <button data-kind="video" class="tab" type="button">Videos</button>
+        <button id="select-toggle" class="tab" type="button">Select</button>
+      </div>
+      <div id="apps" class="apps" aria-label="Apps"></div>
+      <div class="bar">
+        <p id="summary" class="note"></p>
+        <select id="sort" aria-label="Sort"><option value="new">Newest</option><option value="big">Largest</option></select>
+      </div>
+      <div id="grid" class="grid"></div>
+    </section>
+    <p id="message" role="status" class="note"></p>
+  </main>
+  <div id="preview" hidden>
+    <button id="preview-close" aria-label="Close">✕</button>
+    <div id="preview-stage"></div>
+    <p id="preview-name"></p>
+  </div>
+  <nav class="bottom-nav" aria-label="Pages">
+    <a href="/app" data-go="library"><span aria-hidden="true">▦</span>Library</a>
+    <a href="/app" data-go="folders"><span aria-hidden="true">📁</span>Folders</a>
+    <a href="/app" data-go="timeline"><span aria-hidden="true">🗓</span>Timeline</a>
+    <a href="/pair"><span aria-hidden="true">⇧</span>Send</a>
+    <a href="/device" class="active"><span aria-hidden="true">📱</span>Phone</a>
+  </nav>
+</body>
+</html>

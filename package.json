@@ -7,7 +7,9 @@
   "private": true,
   "license": "UNLICENSED",
   "dependencies": {
-    "photoswipe": "5.4.4"
+    "photoswipe": "5.4.4",
+    "qrcode": "^1.5.4",
+    "selfsigned": "^5.5.0"
   },
   "scripts": {
     "start": "electron .",
@@ -33,6 +35,13 @@
       "index.html",
       "styles.css",
       "app.js",
+      "auth-ui.js",
+      "auth.css",
+      "wifi-sync-ui.js",
+      "wifi-sync.css",
+      "folder-tools.css",
+      "video.css",
+      "timeline.css",
       "index-store.js",
       "lucide.min.js",
       "electron/**/*",
@@ -45,7 +54,9 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "icon": "assets/app-icon.ico",

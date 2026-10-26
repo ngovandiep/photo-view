@@ -1,0 +1,25 @@
+#auth-overlay{position:fixed;inset:0;z-index:100;display:grid;place-items:center;background:#242923b3}
+#auth-overlay[hidden]{display:none}
+#auth-form{display:grid;gap:14px;width:min(380px,90vw);padding:32px;border-radius:14px;background:var(--surface);box-shadow:0 20px 60px #0004}
+#auth-form h2{margin:0;font-size:24px}
+#auth-form label{display:grid;gap:6px;font-size:13px;color:var(--muted)}
+#auth-form input{padding:10px 12px;border:1px solid var(--line);border-radius:8px;font:inherit;color:var(--ink)}
+#auth-form input:focus{outline:2px solid var(--accent);outline-offset:1px}
+#auth-form label[hidden]{display:none}
+#auth-message{min-height:18px;margin:0;font-size:13px;color:#b3261e}
+#account-bar{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 4px;margin-top:auto;font-size:12px;color:var(--muted)}
+#account-bar .account-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#account-menu-button[hidden],#account-drawer[hidden],#drawer-backdrop[hidden],#profile-form[hidden]{display:none}
+#drawer-backdrop{position:fixed;inset:0;z-index:90;background:#24292359}
+#account-drawer{position:fixed;top:0;right:0;bottom:0;z-index:95;display:flex;flex-direction:column;gap:6px;width:min(320px,90vw);padding:22px;background:var(--surface);box-shadow:-15px 0 50px #0003}
+.drawer-head{display:flex;align-items:center;gap:12px;margin-bottom:18px}
+.drawer-head>div:nth-child(2){display:grid;min-width:0;flex:1;font-size:13px}
+.drawer-head strong,.drawer-head .muted{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.drawer-avatar{display:grid;place-items:center;width:42px;height:42px;border-radius:50%;background:var(--accent);color:#fff;font-weight:600}
+.drawer-item{display:flex;align-items:center;gap:12px;width:100%;padding:11px 12px;border:0;border-radius:8px;background:none;font:inherit;color:var(--ink);text-align:left;cursor:pointer}
+.drawer-item:hover,.drawer-item:focus-visible{background:var(--tint)}
+.drawer-item:disabled{opacity:.6;cursor:progress}
+.drawer-spacer{flex:1}
+#profile-form{display:grid;gap:8px;padding:0 12px 8px}
+#profile-form input{padding:9px 10px;border:1px solid var(--line);border-radius:8px;font:inherit}
+#drawer-status{min-height:18px;margin:4px 12px;font-size:12px;color:var(--muted)}
