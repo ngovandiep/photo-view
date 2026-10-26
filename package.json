@@ -1,0 +1,63 @@
+{
+  "name": "still-photo-library",
+  "productName": "Still Photo Library",
+  "version": "1.0.0",
+  "description": "Private, local-first Windows photo library",
+  "main": "electron/main.cjs",
+  "private": true,
+  "license": "UNLICENSED",
+  "dependencies": {
+    "photoswipe": "5.4.4"
+  },
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron .",
+    "test": "node --test",
+    "test:index": "node --test tests/*.test.cjs",
+    "dist": "electron-builder --win nsis",
+    "dist:win": "electron-builder --win nsis"
+  },
+  "devDependencies": {
+    "electron": "^38.0.0",
+    "electron-builder": "^26.0.12",
+    "jslint": "^0.12.1"
+  },
+  "build": {
+    "appId": "com.still.photolibrary",
+    "productName": "Still Photo Library",
+    "directories": {
+      "output": "dist",
+      "buildResources": "assets"
+    },
+    "files": [
+      "index.html",
+      "styles.css",
+      "app.js",
+      "index-store.js",
+      "lucide.min.js",
+      "electron/**/*",
+      "assets/**/*",
+      "README.md",
+      "VI_README.md",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "assets/app-icon.ico",
+      "artifactName": "Still-Photo-Library-Setup-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Still Photo Library"
+    }
+  }
+}

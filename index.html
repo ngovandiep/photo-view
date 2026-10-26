@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' blob: data:; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; font-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Still / Photo Library</title>
+  <link rel="stylesheet" href="styles.css">
+  <script defer src="lucide.min.js"></script>
+  <script defer src="index-store.js"></script>
+  <script defer src="app.js"></script>
+</head>
+<body>
+  <aside class="sidebar" id="sidebar">
+    <a class="brand" href="index.html"><span class="brand-mark">S</span>still<span class="brand-dot">.</span></a>
+    <div class="eyebrow">YOUR PHOTO LIBRARY</div>
+    <nav id="navigation" aria-label="Library">
+      <button data-view="photos" class="active"><span aria-hidden="true">▦</span>Photos</button>
+      <button data-view="timeline"><span aria-hidden="true">◷</span>Timeline</button>
+      <button data-view="folders"><span aria-hidden="true">▱</span>Folders</button>
+      <button data-view="albums"><span aria-hidden="true">▣</span>Albums</button>
+      <button data-view="tags"><span aria-hidden="true">#</span>Tags</button>
+      <button data-view="favorites"><span aria-hidden="true">♡</span>Favorites</button>
+      <button data-view="recent"><span aria-hidden="true">↻</span>Recently Added</button>
+    </nav>
+    <div class="sidebar-section"><div class="eyebrow">FOLDERS</div><div id="folder-tree"><p class="muted">No folder connected</p></div></div>
+    <footer class="sidebar-footer"><span class="privacy-dot"></span> Local library<div id="library-summary">Not connected</div></footer>
+  </aside>
+  <main>
+    <header class="topbar">
+      <button id="menu-toggle" class="icon-button mobile-only" title="Toggle sidebar" aria-label="Toggle sidebar" aria-expanded="false">☰</button>
+      <label class="search"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Search your library" aria-label="Search filenames, folders, paths, and tags"></label>
+      <select id="desktop-library" aria-label="Registered photo folders" hidden></select>
+      <div class="index-actions" aria-label="Photo index tools">
+        <button id="export-index" class="icon-button" title="Export JSON index" aria-label="Export JSON index">⇩</button>
+        <button id="import-index" class="icon-button" title="Import JSON index" aria-label="Import JSON index">⇧</button>
+        <button id="save-index" class="icon-button" title="Save index JSON to a chosen location, or download it" aria-label="Save index JSON">▣</button>
+        <input id="index-input" type="file" accept="application/json,.json" hidden>
+      </div>
+      <button id="choose-folder" class="primary">＋ <span>Open folder</span></button>
+      <button id="input-folder" class="icon-button" title="Choose folder using file input" aria-label="Choose folder using file input">▱</button>
+      <input id="folder-input" type="file" webkitdirectory directory multiple hidden>
+    </header>
+    <section class="content">
+      <div class="heading-row"><div><div class="eyebrow" id="breadcrumb">LIBRARY</div><h1 id="view-title">Photos</h1><p id="result-count" class="muted">No photos indexed</p></div><div class="view-switch" aria-label="Display mode"><button id="grid-mode" class="icon-button active" title="Photo grid" aria-label="Photo grid">▦</button><button id="timeline-mode" class="icon-button" title="Date timeline" aria-label="Date timeline">◷</button></div></div>
+      <div class="controls">
+        <label>Folder<select id="folder-filter"><option value="">All folders</option></select></label>
+        <label>Format<select id="type-filter"><option value="">All formats</option></select></label>
+        <label>Sort<select id="sort"><option value="name">Filename A–Z</option><option value="name-desc">Filename Z–A</option><option value="date-desc">Filename date: newest</option><option value="date-asc">Filename date: oldest</option><option value="modified">Modified: newest</option><option value="added">Added to library: newest</option></select></label>
+        <label class="check-label"><input id="show-names" type="checkbox"> Filenames</label>
+        <button id="reset" class="quiet">Reset filters</button>
+      </div>
+      <div id="status" role="status" aria-live="polite">Choose a folder to connect your photos.</div>
+      <progress id="index-progress" hidden aria-label="Indexing photos"></progress>
+      <div class="index-status-row"><span id="index-summary">No index loaded</span><button id="review-missing" class="quiet" hidden></button></div>
+      <section id="collections" class="collections" aria-label="Collections" hidden></section>
+      <section id="empty-state" class="empty-state"><div class="empty-art" aria-hidden="true"><span>▧</span><span>▧</span><span>▧</span></div><h2>A little space for your memories.</h2><p id="empty-message">No folder connected</p><button id="empty-open" class="primary">＋ Open photo folder</button></section>
+      <section id="gallery" aria-label="Photos"></section>
+      <div class="pagination" id="pagination" hidden><button id="previous-page" class="icon-button" title="Previous page" aria-label="Previous page">←</button><span id="page-label"></span><button id="next-page" class="icon-button" title="Next page" aria-label="Next page">→</button></div>
+    </section>
+  </main>
+  <dialog id="viewer" aria-label="Photo viewer">
+    <div class="viewer-toolbar"><span id="viewer-position"></span><span id="viewer-engine"></span><button id="favorite" class="icon-button" title="Toggle favorite" aria-label="Toggle favorite">♡</button><button id="zoom-out" class="icon-button" title="Zoom out" aria-label="Zoom out">−</button><button id="zoom-in" class="icon-button" title="Zoom in" aria-label="Zoom in">＋</button><button id="toggle-fullscreen" class="icon-button" title="Toggle fullscreen" aria-label="Toggle fullscreen">⛶</button><button id="viewer-close" class="icon-button" title="Close viewer" aria-label="Close viewer">×</button></div>
+    <div class="viewer-body"><div class="image-stage" id="image-stage"><button id="viewer-prev" class="viewer-arrow previous" aria-label="Previous photo" title="Previous photo">‹</button><div id="pan-area"><img id="large-image" alt="" draggable="false"></div><p id="viewer-state" role="status"></p><button id="viewer-next" class="viewer-arrow next" aria-label="Next photo" title="Next photo">›</button></div>
+    <aside class="details"><div class="eyebrow">PHOTO DETAILS</div><h2 id="detail-name"></h2><dl id="detail-metadata"></dl><label for="photo-tags">Tags <span class="muted">(comma separated)</span></label><input id="photo-tags" placeholder="Add tags"><label for="photo-albums">Albums <span class="muted">(comma separated)</span></label><input id="photo-albums" placeholder="Add to albums"><button id="save-details" class="primary">Save details</button><p id="detail-status" role="status"></p><div id="suggestions"></div></aside></div>
+  </dialog>
+  <dialog id="missing-dialog" aria-labelledby="missing-title">
+    <div class="missing-dialog-content">
+      <div class="eyebrow">INDEX REVIEW</div>
+      <h2 id="missing-title">Files not found in the latest scan</h2>
+      <p id="missing-explanation"></p>
+      <ul id="missing-list"></ul>
+      <div class="missing-actions"><button id="keep-missing" class="quiet">Keep entries in index</button><button id="remove-missing" class="danger-button">Remove missing entries from index</button></div>
+    </div>
+  </dialog>
+  <noscript>This photo library requires JavaScript to access a folder you select.</noscript>
+</body>
+</html>
