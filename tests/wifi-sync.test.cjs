@@ -10,7 +10,7 @@ const path = require('node:path');
 const indexStore = require('../index-store.js');
 const { createService } = require('../electron/wifi-sync/service.cjs');
 const { createRepo } = require('../electron/wifi-sync/repo.cjs');
-const { openSyncDb } = require('../electron/wifi-sync/db.cjs');
+const { openSyncDb, MIGRATION_COUNT } = require('../electron/wifi-sync/db.cjs');
 const { createSyncServer } = require('../electron/wifi-sync/server.cjs');
 const { createImporter, sanitizeFileName } = require('../electron/wifi-sync/importer.cjs');
 const security = require('../electron/wifi-sync/security.cjs');
@@ -352,10 +352,10 @@ test('revoking a device cancels its pending assets', async () => {
 test('migrations are versioned and rerunning them is safe', async () => {
   const file = path.join(await fs.mkdtemp(path.join(os.tmpdir(), 'wifi-db-')), 'x.db');
   const first = openSyncDb(file);
-  assert.equal(first.prepare('PRAGMA user_version').get().user_version, 2);
+  assert.equal(first.prepare('PRAGMA user_version').get().user_version, MIGRATION_COUNT);
   first.close();
   const second = openSyncDb(file);
-  assert.equal(second.prepare('PRAGMA user_version').get().user_version, 2);
+  assert.equal(second.prepare('PRAGMA user_version').get().user_version, MIGRATION_COUNT);
   second.close();
 });
 

@@ -6,6 +6,14 @@
 #auth-form input{padding:10px 12px;border:1px solid var(--line);border-radius:8px;font:inherit;color:var(--ink)}
 #auth-form input:focus{outline:2px solid var(--accent);outline-offset:1px}
 #auth-form label[hidden]{display:none}
+#auth-form label.remember{display:flex;align-items:center;gap:8px}
+#auth-form label.remember input{padding:0;width:auto}
+#auth-form .password-field{position:relative;display:grid}
+#auth-form .password-field input{padding-right:44px;width:100%;box-sizing:border-box}
+#auth-form .reveal{position:absolute;right:4px;top:50%;transform:translateY(-50%);display:grid;place-items:center;width:34px;height:34px;padding:0;border:0;border-radius:8px;background:none;color:var(--muted);cursor:pointer;transition:background .15s,color .15s}
+#auth-form .reveal:hover{background:var(--line);color:var(--ink)}
+#auth-form .reveal:focus-visible{outline:2px solid var(--accent)}
+#auth-form .reveal[aria-pressed="true"]{color:var(--accent)}
 #auth-message{min-height:18px;margin:0;font-size:13px;color:#b3261e}
 #account-bar{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 4px;margin-top:auto;font-size:12px;color:var(--muted)}
 #account-bar .account-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -23,3 +31,21 @@
 #profile-form{display:grid;gap:8px;padding:0 12px 8px}
 #profile-form input{padding:9px 10px;border:1px solid var(--line);border-radius:8px;font:inherit}
 #drawer-status{min-height:18px;margin:4px 12px;font-size:12px;color:var(--muted)}
+
+.role-badge{display:inline-block;margin-left:6px;padding:1px 8px;border-radius:999px;background:var(--tint);color:var(--muted);font-size:11px;font-weight:600;vertical-align:middle}
+.role-badge.role-editor{background:#e6f4ea;color:#1e6b34}
+.role-badge.role-admin{background:#e8eefc;color:#2a4fa8}
+body[data-can-edit="false"] #import-index,
+body[data-can-edit="false"] #save-index,
+body[data-can-edit="false"] #choose-folder,
+body[data-can-edit="false"] #input-folder,
+body[data-can-edit="false"] #empty-open,
+body[data-can-edit="false"] .tree-action,
+body[data-can-edit="false"] #save-details,
+body[data-can-edit="false"] #suggestions,
+body[data-can-edit="false"] #remove-missing{display:none !important}
+body[data-can-edit="false"] .card-favorite,
+body[data-can-edit="false"] #favorite{pointer-events:none}
+body[data-can-edit="false"] #photo-tags,
+body[data-can-edit="false"] #photo-albums{background:var(--tint)}
+.wifi-readonly{margin:0 0 10px;padding:8px 10px;border-radius:8px;background:var(--tint);color:var(--muted);font-size:12px}

@@ -37,6 +37,16 @@ function createRepo(db, { now = Date.now } = {}) {
     return getSettings();
   }
 
+  const MAX_LOG_ROWS = 5000;
+  let logWrites = 0;
+  // Entries must never contain tokens, pairing codes or passwords; callers pass short human-readable text only.
+  function logEvent({ category = 'operational', severity = 'info', kind, message, deviceId = null, sessionId = null, result = 'success' }) {
+    q('INSERT INTO activity_log (ts, category, severity, kind, message, device_id, session_id, result) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(now(), category, severity, kind, String(message).slice(0, 300), deviceId, sessionId, result);
+    logWrites += 1;
+    if (logWrites % 200 === 0) q('DELETE FROM activity_log WHERE id <= (SELECT MAX(id) FROM activity_log) - ?').run(MAX_LOG_ROWS);
+  }
+
   function createPairingCode(ttlSeconds) {
     return transaction(db, () => {
       q('UPDATE pairing_codes SET used_at = ? WHERE used_at IS NULL').run(now());
@@ -57,6 +67,7 @@ function createRepo(db, { now = Date.now } = {}) {
       const id = crypto.randomUUID();
       q('INSERT INTO devices (id, name, platform, token_hash, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)')
         .run(id, name, platform, security.hashToken(token), now(), now());
+      logEvent({ category: 'security', kind: 'device_paired', message: `Device "${name}" (${platform}) paired.`, deviceId: id });
       return { id, token };
     });
   }
@@ -68,12 +79,33 @@ function createRepo(db, { now = Date.now } = {}) {
     return device || null;
   }
 
-  const listDevices = () => q('SELECT id, name, platform, created_at, last_seen_at, last_sync_at, revoked_at FROM devices ORDER BY created_at').all();
+  const listDevices = () => q('SELECT id, name, platform, created_at, last_seen_at, last_sync_at, revoked_at FROM devices WHERE removed_at IS NULL ORDER BY created_at').all();
+
+  function renameDevice(id, name) {
+    const clean = String(name || '').trim().slice(0, 60);
+    if (!clean) throw new Error('A device name is required.');
+    const result = q('UPDATE devices SET name = ? WHERE id = ? AND removed_at IS NULL').run(clean, id);
+    if (result.changes !== 1) throw new Error('Device not found.');
+    logEvent({ category: 'security', kind: 'device_renamed', message: `Device renamed to "${clean}".`, deviceId: id });
+    return clean;
+  }
+
+  // Removing a registration hides the device and revokes its token; imported assets and their files stay untouched.
+  function removeDevice(id) {
+    const device = q('SELECT id, name FROM devices WHERE id = ? AND removed_at IS NULL').get(id);
+    if (!device) throw new Error('Device not found.');
+    const revoked = revokeDevice(id);
+    q('UPDATE devices SET removed_at = ? WHERE id = ?').run(now(), id);
+    logEvent({ category: 'security', kind: 'device_removed', message: `Device "${device.name}" removed from the registered list. Imported photos were kept.`, deviceId: id });
+    return revoked;
+  }
 
   function revokeDevice(id) {
     return transaction(db, () => {
       const result = q('UPDATE devices SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL').run(now(), id);
       if (result.changes !== 1) return { revoked: false, cancelled: [] };
+      const device = q('SELECT name FROM devices WHERE id = ?').get(id);
+      logEvent({ category: 'security', severity: 'warning', kind: 'device_revoked', message: `Authorization revoked for "${device.name}". Imported photos were kept.`, deviceId: id });
       const cancelled = q("SELECT id FROM assets WHERE device_id = ? AND state IN ('discovered','queued','uploading','failed_retryable')").all(id).map(row => row.id);
       q("UPDATE assets SET state = 'cancelled', updated_at = ? WHERE device_id = ? AND state IN ('discovered','queued','uploading','failed_retryable')").run(now(), id);
       q("UPDATE sync_sessions SET status = 'cancelled' WHERE device_id = ? AND status = 'open'").run(id);
@@ -86,13 +118,19 @@ function createRepo(db, { now = Date.now } = {}) {
     if (existing) return { session: existing, created: false };
     const id = crypto.randomUUID();
     q('INSERT INTO sync_sessions (id, device_id, idempotency_key, created_at) VALUES (?, ?, ?, ?)').run(id, deviceId, key, now());
+    logEvent({ kind: 'sync_started', message: 'Synchronization session started.', deviceId, sessionId: id });
     return { session: q('SELECT * FROM sync_sessions WHERE id = ?').get(id), created: true };
   }
   const getSession = (id, deviceId) => q('SELECT * FROM sync_sessions WHERE id = ? AND device_id = ?').get(id, deviceId);
 
   function completeSession(id) {
-    q("UPDATE sync_sessions SET status = 'completed', completed_at = ? WHERE id = ? AND status = 'open'").run(now(), id);
-    return q('SELECT * FROM sync_sessions WHERE id = ?').get(id);
+    const done = q("UPDATE sync_sessions SET status = 'completed', completed_at = ? WHERE id = ? AND status = 'open'").run(now(), id);
+    const session = q('SELECT * FROM sync_sessions WHERE id = ?').get(id);
+    if (done.changes === 1) {
+      const failed = q("SELECT COUNT(*) AS n FROM assets WHERE session_id = ? AND state IN ('failed_retryable','failed_permanent')").get(id).n;
+      logEvent({ severity: failed ? 'warning' : 'info', kind: 'sync_completed', message: failed ? `Synchronization completed with ${failed} failed file(s).` : 'Synchronization completed.', deviceId: session.device_id, sessionId: id, result: failed ? 'partial' : 'success' });
+    }
+    return session;
   }
 
   // Registering the same source asset again returns the existing row, which makes retries idempotent.
@@ -123,10 +161,15 @@ function createRepo(db, { now = Date.now } = {}) {
   function failRetryable(id, message) {
     const asset = getAsset(id);
     const retries = asset.retry_count + 1;
+    logEvent({ severity: 'warning', kind: 'upload_failed', message: `Upload failed for ${asset.filename}: ${message}`, deviceId: asset.device_id, sessionId: asset.session_id, result: retries >= MAX_RETRIES ? 'failed' : 'will_retry' });
     if (retries >= MAX_RETRIES) return update(id, { state: 'failed_permanent', retry_count: retries, last_error: message, next_retry_at: null });
     return update(id, { state: 'failed_retryable', retry_count: retries, last_error: message, next_retry_at: now() + Math.min(30000 * 2 ** retries, 3600000) });
   }
-  const failPermanent = (id, message) => update(id, { state: 'failed_permanent', last_error: message, next_retry_at: null });
+  function failPermanent(id, message) {
+    const asset = getAsset(id);
+    logEvent({ severity: 'error', kind: 'upload_failed', message: `Upload failed for ${asset.filename}: ${message}`, deviceId: asset.device_id, sessionId: asset.session_id, result: 'failed' });
+    return update(id, { state: 'failed_permanent', last_error: message, next_retry_at: null });
+  }
 
   function progress(sessionId) {
     const counts = Object.fromEntries(q('SELECT state, COUNT(*) AS n, COALESCE(SUM(size), 0) AS bytes FROM assets WHERE session_id = ? GROUP BY state').all(sessionId).map(row => [row.state, { count: row.n, bytes: row.bytes }]));
@@ -168,7 +211,7 @@ function createRepo(db, { now = Date.now } = {}) {
   }
 
   return {
-    db, now, getSettings, setSettings, createPairingCode, claimPairingCode, authenticate, listDevices, revokeDevice,
+    db, now, getSettings, setSettings, createPairingCode, claimPairingCode, authenticate, listDevices, revokeDevice, renameDevice, removeDevice, logEvent,
     createSession, getSession, completeSession, registerAsset, getAsset, getDeviceAsset, update, failRetryable, failPermanent,
     progress, stats, requeue, touchDeviceSync, relocate, getIdempotent, putIdempotent
   };

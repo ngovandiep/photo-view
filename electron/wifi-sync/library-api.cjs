@@ -4,6 +4,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs/promises');
 const { createReadStream } = require('node:fs');
 const path = require('node:path');
+const { createPhoneChat } = require('./phone-chat.cjs');
 
 const IMAGE = new Set(['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'avif', 'heic', 'heif', 'tif', 'tiff', 'dng']);
 const VIDEO = new Set(['mp4', 'm4v', 'mov', 'webm', 'mkv', 'ogv', 'avi', '3gp']);
@@ -27,9 +28,10 @@ function dateOf(entry) {
   return entry.lastModified || 0;
 }
 
-function createLibraryApi({ listLibraries, resolveLibrary, readIndex, saveIndex, makeThumbnail, thumbDir, getAccount = async () => null, verifyLogin = null, trashItem = null, onChange = () => {}, appVersion = '1.0.0', now = Date.now }) {
+function createLibraryApi({ listLibraries, resolveLibrary, readIndex, saveIndex, makeThumbnail, thumbDir, getAccount = async () => null, verifyLogin = null, chat = null, trashItem = null, onChange = () => {}, appVersion = '1.0.0', now = Date.now }) {
   const cache = new Map();
   const logins = new Map();
+  const phoneChat = chat ? createPhoneChat({ chat }) : null;
   let loginsLoaded = false;
   // Sign-ins persist across restarts until the phone signs out (or the desktop account changes).
   const loginFile = thumbDir ? path.join(path.dirname(thumbDir), 'phone-logins.json') : '';
@@ -232,7 +234,7 @@ function createLibraryApi({ listLibraries, resolveLibrary, readIndex, saveIndex,
   }
 
   // Returns true when the route belongs to this module.
-  async function handle({ req, res, route, url, device, send, readJson, HttpError }) {
+  async function handle({ req, res, route, url, device, send, readJson, HttpError, isActive }) {
     const method = req.method;
     // When the desktop is signed in to an account, a paired phone must also sign in to that same account.
     const user = await getAccount().catch(() => null);
@@ -241,7 +243,7 @@ function createLibraryApi({ listLibraries, resolveLibrary, readIndex, saveIndex,
     const session = logins.get(device.id);
     const loggedIn = !loginRequired || Boolean(session && session === emailOf(user));
     if (route === '/me' && method === 'GET') {
-      send(res, 200, { device: { id: device.id, name: device.name }, loginRequired, loggedIn, account: user && loggedIn ? { name: user.displayName || user.name || '', email: user.email || '' } : null, appVersion });
+      send(res, 200, { device: { id: device.id, name: device.name }, loginRequired, loggedIn, chat: Boolean(phoneChat && loginRequired && loggedIn && chat.signedIn()), account: user && loggedIn ? { name: user.displayName || user.name || '', email: user.email || '' } : null, appVersion });
       return true;
     }
     if (route === '/login' && method === 'POST') {
@@ -261,7 +263,15 @@ function createLibraryApi({ listLibraries, resolveLibrary, readIndex, saveIndex,
       send(res, 200, { ok: true });
       return true;
     }
-    if (route === '/logout' && method === 'POST') { logins.delete(device.id); await saveLogins(); send(res, 200, { ok: true }); return true; }
+    if (route === '/logout' && method === 'POST') { logins.delete(device.id); await saveLogins(); phoneChat?.closeDevice(device.id); send(res, 200, { ok: true }); return true; }
+    // Chat belongs to the account, so it needs both a signed-in computer and a phone signed in to that same account.
+    if (route === '/chat' || route.startsWith('/chat/')) {
+      if (!phoneChat) throw new HttpError(404, 'not_found', 'Chat is not available.');
+      if (!loginRequired || !chat.signedIn()) throw new HttpError(409, 'chat_unavailable', 'Sign in on the computer to use chat.');
+      if (!loggedIn) throw new HttpError(403, 'login_required', 'Sign in to use chat.');
+      const stillSignedIn = async () => { const current = await getAccount().catch(() => null); return Boolean(current) && logins.get(device.id) === emailOf(current); };
+      return phoneChat.handle({ req, res, route, url, device, send, readJson, HttpError, isActive, stillSignedIn });
+    }
     const gated = route === '/libraries' || route.startsWith('/libraries/');
     if (gated && !loggedIn) throw new HttpError(403, 'login_required', 'Sign in to use the library.');
     if (route === '/libraries' && method === 'GET') {

@@ -12,7 +12,7 @@
   const preferenceKey = 'still-photo-library-ui-v1';
   const indexStore = window.PhotoIndexStore;
   const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
-  const state = { photos: [], filtered: [], folders: new Map(), discoveredIds: new Set(), root: '', scanCompleted: false, view: 'photos', kind: 'photo', folder: '', collection: '', page: 0, busy: false, generation: 0, metadataPass: 0, viewerIndex: 0, viewerList: [], viewerToken: 0, viewerUrls: new Map(), gridUrls: new Set(), zoom: 1, panX: 0, panY: 0, index: indexStore.create(), indexById: new Map(), indexDirty: false, inaccessiblePaths: [], storageAvailable: true, desktopLibraryId: '', desktopLibraries: [] };
+  const state = { photos: [], filtered: [], folders: new Map(), discoveredIds: new Set(), root: '', scanCompleted: false, view: 'photos', kind: 'photo', folder: '', collection: '', page: 0, busy: false, generation: 0, metadataPass: 0, viewerIndex: 0, viewerList: [], viewerToken: 0, viewerUrls: new Map(), gridUrls: new Set(), zoom: 1, panX: 0, panY: 0, index: indexStore.create(), indexById: new Map(), indexDirty: false, inaccessiblePaths: [], storageAvailable: true, desktopLibraryId: '', desktopLibraries: [], thumbCache: new Map(), activation: 0, pendingUi: null, sessionKey: '', restoring: false };
   let observer;
   let photoSwipe;
   let leavingPhotoSwipe = null;
@@ -66,13 +66,16 @@
   }
 
   function meta(photo) { return state.indexById.get(photo.id)?.metadata || { tags: [], favorite: false, albumIds: [] }; }
-  function markIndexChanged() { state.index.updatedAt = new Date().toISOString(); state.indexDirty = true; updateIndexSummary(); if (window.desktopLibrary) scheduleDesktopSave(); }
+  // View-only accounts (and signed-out desktop sessions) browse only; the main process enforces this too.
+  function canEdit() { return !window.desktopAuth || document.body.dataset.canEdit === 'true'; }
+  function denyEdit() { announce('Your account is view-only. Ask an administrator for the Editor role to make changes.'); }
+  function markIndexChanged() { if (!canEdit()) return; state.index.updatedAt = new Date().toISOString(); state.indexDirty = true; updateIndexSummary(); if (window.desktopLibrary) scheduleDesktopSave(); }
   function scheduleDesktopSave() {
     clearTimeout(desktopSaveTimer);
     const libraryId = state.desktopLibraryId;
     const snapshot = JSON.parse(JSON.stringify(state.index));
     desktopSaveTimer = setTimeout(() => {
-      if (!libraryId || !state.index.root) return;
+      if (!canEdit() || !libraryId || !state.index.root) return;
       desktopSaveQueue = desktopSaveQueue.catch(() => {}).then(() => window.desktopLibrary.saveIndex(libraryId, snapshot)).then(() => {
         if (state.desktopLibraryId === libraryId && state.index.updatedAt === snapshot.updatedAt) { state.indexDirty = false; updateIndexSummary(); }
       }).catch(error => announce(`Automatic index save failed: ${error.message}. Export a JSON backup before closing.`));
@@ -80,6 +83,7 @@
   }
   async function persistDesktopIndexNow() {
     clearTimeout(desktopSaveTimer);
+    if (!canEdit()) return null;
     if (!state.desktopLibraryId) throw new Error('No saved photo folder is active.');
     const libraryId = state.desktopLibraryId;
     const snapshot = JSON.parse(JSON.stringify(state.index));
@@ -92,7 +96,7 @@
     const missingCount = reviewableMissingEntries().length;
     const count = state.index.entries.length;
     const hasIndex = !!state.index.root || count > 0;
-    byId('index-summary').textContent = hasIndex ? `Index v${state.index.version} · ${formatNumber(count)} entries${state.indexDirty ? ' · unsaved changes' : ''}` : 'No index loaded';
+    byId('index-summary').textContent = hasIndex ? `Index v${state.index.version} · ${formatNumber(count)} entries${state.indexDirty && canEdit() ? ' · unsaved changes' : ''}` : 'No index loaded';
     byId('review-missing').hidden = !missingCount;
     byId('review-missing').textContent = `Review missing (${formatNumber(missingCount)})`;
     byId('export-index').disabled = !hasIndex;
@@ -120,6 +124,46 @@
       byId('show-names').checked = saved.showNames === true;
       byId('gallery').classList.toggle('show-names', byId('show-names').checked);
     } catch { state.storageAvailable = false; }
+  }
+
+  // Last-session state: remembered per account in the main process and re-applied after sign-in or restart.
+  function captureUi() {
+    return { libraryId: state.desktopLibraryId, view: state.view, kind: state.kind, folder: state.folder, collection: state.collection, search: byId('search').value.trim(), type: byId('type-filter').value, sort: byId('sort').value, page: state.page };
+  }
+  let uiSaveTimer = 0;
+  function scheduleUiSave() {
+    if (!window.desktopLibrary || state.restoring || state.busy || !state.desktopLibraryId) return;
+    clearTimeout(uiSaveTimer);
+    uiSaveTimer = setTimeout(flushUiSave, 600);
+  }
+  function flushUiSave() {
+    clearTimeout(uiSaveTimer);
+    if (!window.desktopLibrary || state.restoring || state.busy || !state.desktopLibraryId) return;
+    window.desktopLibrary.saveSession(captureUi()).catch(() => {});
+  }
+  function applyUi(ui) {
+    if (!ui || state.busy) return;
+    state.restoring = true;
+    try {
+      state.view = ui.view; state.kind = ui.kind; state.collection = ui.collection;
+      document.querySelectorAll('[data-view]').forEach(button => { button.classList.toggle('active', button.dataset.view === ui.view); button.setAttribute('aria-current', button.dataset.view === ui.view ? 'page' : 'false'); });
+      byId('grid-mode').classList.toggle('active', ui.view !== 'timeline'); byId('timeline-mode').classList.toggle('active', ui.view === 'timeline');
+      byId('sort').value = ui.sort; byId('search').value = ui.search;
+      populateFormats(); updateKindCounts();
+      byId('type-filter').value = ui.type;
+      byId('folder-filter').value = ui.folder;
+      renderCollections(); applyFilters();
+      state.page = Math.min(ui.page, Math.max(0, Math.ceil(state.filtered.length / pageSize) - 1)); renderGrid();
+      if (ui.sort === 'modified') hydrateModifiedDates();
+    } finally { state.restoring = false; }
+  }
+  async function restoreSessionForUser() {
+    const ui = await window.desktopLibrary.loadSession().catch(() => null);
+    const library = ui && state.desktopLibraries.find(item => item.id === ui.libraryId && item.available);
+    if (!library) return;
+    if (library.id === state.desktopLibraryId) { applyUi(ui); return; }
+    state.pendingUi = ui;
+    await activateDesktopLibrary(library.id).catch(() => {});
   }
 
   function releaseGrid() { observer?.disconnect(); for (const url of state.gridUrls) URL.revokeObjectURL(url); state.gridUrls.clear(); state.generation++; }
@@ -215,6 +259,7 @@
 
   async function chooseFolder() {
     if (state.busy) return;
+    if (window.desktopLibrary && !canEdit()) { denyEdit(); return; }
     if (window.desktopLibrary) {
       try {
         const libraries = await window.desktopLibrary.chooseFolders();
@@ -246,11 +291,32 @@
     const library = state.desktopLibraries.find(item => item.id === libraryId);
     if (!library) return;
     if (state.desktopLibraryId && state.indexDirty) await persistDesktopIndexNow();
+    const token = ++state.activation;
+    const sameLibrary = state.desktopLibraryId === library.id;
+    // Keep the user's place: the remembered session on first open, or the live view when rescanning the same folder.
+    const resume = state.pendingUi && state.pendingUi.libraryId === library.id ? state.pendingUi : sameLibrary && state.scanCompleted ? captureUi() : null;
+    state.pendingUi = null;
     const index = await window.desktopLibrary.loadIndex(library.id);
+    if (token !== state.activation) return;
     state.desktopLibraryId = library.id;
     state.index = index;
     renderDesktopLibraries();
-    if (!resetLibrary(library.name)) return;
+    // Show the last scan immediately, then refresh it from disk in the background.
+    let cachedShown = false;
+    if (library.available && !sameLibrary) {
+      const cached = await window.desktopLibrary.cachedScan(library.id).catch(() => null);
+      if (token !== state.activation) return;
+      if (cached && cached.files.length && resetLibrary(library.name)) {
+        for (const folder of cached.folders) addFolder(folder);
+        for (const file of cached.files) addPhoto(file.path, null, { size: file.size, lastModified: file.lastModified });
+        state.busy = false;
+        syncIndexMap(); renderFolderTree(); populateFilters();
+        if (resume) applyUi(resume); else applyFilters();
+        byId('library-summary').textContent = `${library.name} · ${formatNumber(state.photos.length)} photos · from your last session, refreshing…`;
+        cachedShown = true;
+      }
+    }
+    if (!cachedShown && !resetLibrary(library.name)) return;
     if (!library.available) {
       state.busy = false;
       byId('choose-folder').disabled = false; byId('input-folder').disabled = true; byId('empty-open').disabled = false; byId('index-progress').hidden = true;
@@ -264,10 +330,15 @@
       const result = await window.desktopLibrary.scanLibrary(library.id, progress => {
         announce(`Scanning ${library.name} · ${formatNumber(progress.processed)} files checked · ${formatNumber(progress.imageCount)} photos found`);
       });
+      if (token !== state.activation) return;
+      const place = cachedShown ? captureUi() : resume;
+      if (cachedShown) resetLibrary(library.name);
       for (const folder of result.folders) addFolder(folder);
       for (const file of result.files) addPhoto(file.path, null, { size: file.size, lastModified: file.lastModified });
       await finishIndex(result.processed, result.inaccessiblePaths);
+      if (place && token === state.activation) applyUi(place);
     } catch (error) {
+      if (token !== state.activation) return;
       state.busy = false; byId('choose-folder').disabled = false; byId('input-folder').disabled = true; byId('empty-open').disabled = false; byId('index-progress').hidden = true;
       syncIndexMap(); renderFolderTree(); populateFilters(); applyFilters();
       announce(`Photo folder scan failed: ${error.message}. The saved index was retained.`);
@@ -291,7 +362,9 @@
       state.desktopLibraries = await window.desktopLibrary.listLibraries();
       renderDesktopLibraries();
       if (state.desktopLibraries.length) {
-        const preferred = state.desktopLibraries.find(library => library.available) || state.desktopLibraries[0];
+        const saved = await window.desktopLibrary.loadSession().catch(() => null);
+        const preferred = (saved && state.desktopLibraries.find(library => library.id === saved.libraryId && library.available)) || state.desktopLibraries.find(library => library.available) || state.desktopLibraries[0];
+        state.pendingUi = saved && saved.libraryId === preferred.id ? saved : null;
         await activateDesktopLibrary(preferred.id);
       } else {
         announce('Add one or more photo folders. They will be remembered on this computer.');
@@ -328,6 +401,7 @@
   }
 
   function openFolderDialog(mode, node) {
+    if (!canEdit()) { denyEdit(); return; }
     if (state.busy) { announce('Wait for the current scan to finish first.'); return; }
     const parentPath = node.path.includes('/') ? node.path.slice(0, node.path.lastIndexOf('/')) : '';
     const overlay = make('div', 'folder-dialog-backdrop'); const box = make('form', 'folder-dialog');
@@ -458,7 +532,7 @@
   }
 
   function renderGrid() {
-    releaseGrid(); const generation = state.generation; const gallery = byId('gallery'); gallery.replaceChildren();
+    scheduleUiSave(); releaseGrid(); const generation = state.generation; const gallery = byId('gallery'); gallery.replaceChildren();
     const titles = { photos: 'Photos', timeline: 'Timeline', folders: 'Folders', albums: 'Albums', tags: 'Tags', favorites: 'Favorites', recent: 'Recently Added', videos: 'Videos', documents: 'Documents' };
     const selectedAlbum = state.view === 'albums' ? state.index.albums.find(album => album.id === state.collection)?.name : '';
     byId('view-title').textContent = selectedAlbum || (state.view === 'tags' ? state.collection : '') || state.folder.split('/').pop() || titles[state.view];
@@ -580,9 +654,22 @@
       const badge = button.parentElement?.querySelector('.video-badge'); if (badge && Number.isFinite(video.duration)) badge.textContent = `▶ ${formatDuration(video.duration)}`;
     } catch { if (generation === state.generation) button.replaceChildren(make('span', 'photo-placeholder', `${photo.type.toUpperCase()} · Preview unavailable`)); }
   }
+  // Decoded previews survive grid rebuilds (closing the viewer, paging, filtering) so they are not re-read from disk.
+  const thumbCacheLimit = 600;
+  const thumbKey = photo => `|||`;
+  function rememberThumbnail(photo, url) {
+    const key = thumbKey(photo);
+    state.thumbCache.delete(key); state.thumbCache.set(key, { url, dimensions: photo.dimensions });
+    while (state.thumbCache.size > thumbCacheLimit) { const [oldest, entry] = state.thumbCache.entries().next().value; state.thumbCache.delete(oldest); URL.revokeObjectURL(entry.url); }
+  }
+  function showThumbnail(button, photo, url) {
+    const preview = make('img'); preview.alt = photo.name; preview.decoding = 'async'; preview.src = url; button.replaceChildren(preview);
+  }
   async function loadThumbnail(button, generation) {
     if (isDocument(button.photo)) { button.replaceChildren(make('span', 'doc-tile', button.photo.type.toUpperCase())); return; }
     if (isVideo(button.photo)) return loadVideoThumbnail(button, generation);
+    const cached = state.thumbCache.get(thumbKey(button.photo));
+    if (cached) { state.thumbCache.delete(thumbKey(button.photo)); state.thumbCache.set(thumbKey(button.photo), cached); if (cached.dimensions) button.photo.dimensions = cached.dimensions; showThumbnail(button, button.photo, cached.url); return; }
     let original; let thumbnail;
     try {
       const photo = button.photo; const file = await getFile(photo); if (generation !== state.generation) return;
@@ -591,13 +678,13 @@
       const scale = Math.min(1, 480 / Math.max(image.naturalWidth, image.naturalHeight));
       const canvas = document.createElement('canvas'); canvas.width = Math.max(1, Math.round(image.naturalWidth * scale)); canvas.height = Math.max(1, Math.round(image.naturalHeight * scale)); canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height);
       const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.8)); if (!blob || generation !== state.generation) return;
-      thumbnail = URL.createObjectURL(blob); state.gridUrls.add(thumbnail);
-      const preview = make('img'); preview.alt = photo.name; preview.loading = 'lazy'; preview.decoding = 'async'; preview.src = thumbnail; button.replaceChildren(preview);
+      thumbnail = URL.createObjectURL(blob); rememberThumbnail(photo, thumbnail);
+      showThumbnail(button, photo, thumbnail);
     } catch { if (generation === state.generation) button.replaceChildren(make('span', 'photo-placeholder', `${button.photo.type.toUpperCase()} · Preview unavailable`)); }
     finally { if (original) URL.revokeObjectURL(original); }
   }
 
-  function toggleFavorite(photo) { const entry = state.indexById.get(photo.id); if (!entry) return; entry.metadata.favorite = !entry.metadata.favorite; markIndexChanged(); }
+  function toggleFavorite(photo) { if (!canEdit()) { denyEdit(); return; } const entry = state.indexById.get(photo.id); if (!entry) return; entry.metadata.favorite = !entry.metadata.favorite; markIndexChanged(); }
   function indexJson() { return JSON.stringify(state.index, null, 2); }
   function finishIndexExport() { state.indexDirty = false; updateIndexSummary(); }
   async function exportIndex() {
@@ -650,6 +737,7 @@
     } catch (error) { announce(`Index not imported: ${error instanceof SyntaxError ? 'the file is not valid JSON.' : error.message}`); }
   }
   async function importDesktopIndex() {
+    if (!canEdit()) { denyEdit(); return; }
     try {
       const imported = await window.desktopLibrary.importIndex(state.desktopLibraryId);
       if (!imported) return;
@@ -677,6 +765,7 @@
     byId('missing-dialog').showModal();
   }
   function removeMissingEntries() {
+    if (!canEdit()) { denyEdit(); return; }
     const removable = new Set(reviewableMissingEntries().map(entry => entry.id));
     const count = removable.size;
     state.index.entries = state.index.entries.filter(entry => !removable.has(entry.id));
@@ -771,7 +860,7 @@
     leavePhotoSwipe(); showViewerPhoto();
   }
   function navigateViewer(offset) { state.viewerDir = offset < 0 ? -1 : 1; const index = state.viewerIndex + offset; if (index >= 0 && index < state.viewerList.length) { if (photoSwipe) photoSwipe.goTo(index); else { state.viewerIndex = index; showViewerPhoto(); } } }
-  function closeViewer() { byId('viewer').close(); if (photoSwipe) photoSwipe.close(); resetVideo(); state.viewerToken++; byId('large-image').removeAttribute('src'); for (const url of state.viewerUrls.values()) URL.revokeObjectURL(url); state.viewerUrls.clear(); const page = state.page; applyFilters(); state.page = Math.min(page, Math.max(0, Math.ceil(state.filtered.length / pageSize) - 1)); renderGrid(); byId('view-title').setAttribute('tabindex', '-1'); returnFocus?.isConnected ? returnFocus.focus() : byId('view-title').focus(); }
+  function closeViewer() { byId('viewer').close(); if (photoSwipe) photoSwipe.close(); resetVideo(); state.viewerToken++; byId('large-image').removeAttribute('src'); for (const url of state.viewerUrls.values()) URL.revokeObjectURL(url); state.viewerUrls.clear(); if (['favorites', 'tags', 'albums'].includes(state.view) || byId('search').value.trim()) { const page = state.page; applyFilters(); state.page = Math.min(page, Math.max(0, Math.ceil(state.filtered.length / pageSize) - 1)); renderGrid(); } byId('view-title').setAttribute('tabindex', '-1'); returnFocus?.isConnected ? returnFocus.focus() : byId('view-title').focus(); }
 
   async function loadPhotoSwipe() {
     if (!photoSwipePromise) photoSwipePromise = new Promise((resolve, reject) => {
@@ -852,6 +941,7 @@
   byId('toggle-details').addEventListener('click', () => setDetailsHidden(!byId('viewer').classList.contains('details-hidden')));
   byId('favorite').addEventListener('click', () => { const photo = state.viewerList[state.viewerIndex]; toggleFavorite(photo); updateDetails(photo); });
   byId('save-details').addEventListener('click', () => {
+    if (!canEdit()) { denyEdit(); return; }
     const photo = state.viewerList[state.viewerIndex]; const entry = state.indexById.get(photo.id); if (!entry) return;
     entry.metadata.tags = splitValues(byId('photo-tags').value);
     entry.metadata.albumIds = splitValues(byId('photo-albums').value).map(ensureAlbumId);
@@ -860,6 +950,7 @@
   byId('export-index').addEventListener('click', exportIndex);
   byId('save-index').addEventListener('click', saveIndex);
   byId('import-index').addEventListener('click', () => window.desktopLibrary ? importDesktopIndex() : byId('index-input').click());
+  document.addEventListener('still:permissions', () => { for (const id of ['photo-tags', 'photo-albums']) byId(id).readOnly = !canEdit(); updateIndexSummary(); if (canEdit() && state.indexDirty && state.desktopLibraryId && window.desktopLibrary) scheduleDesktopSave(); });
   byId('index-input').addEventListener('change', event => { const file = event.target.files[0]; event.target.value = ''; importIndex(file); });
   byId('review-missing').addEventListener('click', openMissingReview);
   byId('keep-missing').addEventListener('click', () => byId('missing-dialog').close());
@@ -898,6 +989,13 @@
   byId('choose-folder').replaceChildren(icon('FolderOpen'), make('span', '', 'Open folder')); byId('empty-open').replaceChildren(icon('FolderOpen'), make('span', '', 'Open photo folder'));
   loadPreferences(); updateIndexSummary();
   if (window.desktopLibrary) initializeDesktop();
-  window.addEventListener('pagehide', () => { releaseGrid(); for (const url of state.viewerUrls.values()) URL.revokeObjectURL(url); });
+  document.addEventListener('still:permissions', event => {
+    const key = event.detail && event.detail.userKey;
+    if (!key) return;
+    const previous = state.sessionKey;
+    state.sessionKey = key;
+    if (previous && previous !== key && window.desktopLibrary) { clearTimeout(uiSaveTimer); restoreSessionForUser(); }
+  });
+  window.addEventListener('pagehide', () => { flushUiSave(); releaseGrid(); for (const url of state.viewerUrls.values()) URL.revokeObjectURL(url); });
   if (!('webkitdirectory' in byId('folder-input')) && !window.showDirectoryPicker) announce('This browser cannot select folders. Open this page in a current Chrome, Edge, Firefox, or Safari desktop browser.');
 })();

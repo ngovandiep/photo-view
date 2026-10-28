@@ -46,7 +46,12 @@
     if (on) { $('menu-panel').hidden = false; pushLayer(menuClose); } else dismissLayer(menuClose);
   }
 
+  // Lets companion scripts (chat.js) follow sign-in state and share the back-gesture stack.
+  const announce = (name, detail) => window.dispatchEvent(new CustomEvent(name, { detail }));
+  window.StillApp = Object.freeze({ pushLayer: close => pushLayer(close, 'chat'), dismissLayer });
+
   function showLogin(message = '') {
+    announce('still:signed-out');
     $('library-screen').hidden = true; $('pair-screen').hidden = true; $('login-screen').hidden = false; $('login-message').textContent = message;
     closeViewer();
   }
@@ -65,6 +70,7 @@
   const url = (action, item, extra = '') => `${API}/libraries/${state.libraryId}/${action}?path=${encodeURIComponent(item.path)}${extra}`;
 
   function showPair(message = '') {
+    announce('still:signed-out');
     $('library-screen').hidden = true; $('login-screen').hidden = true; $('pair-screen').hidden = false; $('pair-message').textContent = message;
     $('device-name').value ||= /iPhone|iPad/.test(navigator.userAgent) ? 'iPhone' : /Android/.test(navigator.userAgent) ? 'Android phone' : 'Browser';
   }
@@ -89,6 +95,7 @@
       if (me.loginRequired && !me.loggedIn) { showLogin(); return; }
       $('library-screen').hidden = false;
       $('logout').hidden = !me.loginRequired;
+      announce('still:ready', { chat: Boolean(me.chat), creds: state.creds });
       const libs = await call('GET', '/libraries');
       $('account-line').textContent = me.account ? `Signed in as ${me.account.name || me.account.email} · ${me.device.name}` : `Local library · ${me.device.name}`;
       state.libraries = libs.libraries;

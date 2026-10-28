@@ -10,6 +10,13 @@ function openDb(file = process.env.DB_PATH || path.join(__dirname, '..', 'data',
   const db = new DatabaseSync(file);
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
   db.exec(SCHEMA);
+  if (!db.prepare('PRAGMA table_info(users)').all().some(column => column.name === 'disabled_at')) {
+    db.exec('ALTER TABLE users ADD COLUMN disabled_at TEXT');
+  }
+  if (!db.prepare('PRAGMA table_info(users)').all().some(column => column.name === 'role')) {
+    db.exec("ALTER TABLE users ADD COLUMN role TEXT     NOT NULL DEFAULT 'viewer'");
+  }
+      db.exec("UPDATE users SET role = 'viewer' WHERE role NOT IN ('viewer', 'editor', 'admin')");
   return db;
 }
 

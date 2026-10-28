@@ -211,7 +211,13 @@
     );
     if (!status.libraries.length) settings.append(el('p', 'wifi-error', 'Add a photo folder first; uploads need a destination library.'));
     panel.append(settings);
+    if (document.body.dataset.canSync === 'false') {
+      panel.querySelectorAll('button:not(.wifi-close), input, select').forEach(control => { control.disabled = true; });
+      head.after(el('p', 'wifi-readonly', 'View-only: you can see sync status, but starting sync, pairing and settings need the Editor role.'));
+    }
   }
+
+  document.addEventListener('still:permissions', render);
 
   build();
   refresh();

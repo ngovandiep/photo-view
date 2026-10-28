@@ -37,11 +37,18 @@ function createService({ dataDir, resolveLibrary, listLibraries, indexPhoto, lib
     const addresses = host ? [{ address: host }] : security.lanAddresses();
     if (!addresses.length) throw new Error('No private Wi-Fi/LAN address found. Connect this PC to a local network.');
     const address = addresses[0].address;
-    certificate = tls ? await security.ensureCertificate(dataDir, { protect, unprotect }) : null;
-    server = createSyncServer({ repo, importer, tls: certificate, libraryApi, onChange: emit, onBytes: recordBytes, now });
-    const bound = await server.listen({ host: address, port: settings.port });
-    running = { host: bound.host, port: bound.port, startedAt: now() };
+    try {
+      certificate = tls ? await security.ensureCertificate(dataDir, { protect, unprotect }) : null;
+      server = createSyncServer({ repo, importer, tls: certificate, libraryApi, onChange: emit, onBytes: recordBytes, now });
+      const bound = await server.listen({ host: address, port: settings.port });
+      running = { host: bound.host, port: bound.port, startedAt: now() };
+    } catch (error) {
+      server = null;
+      repo.logEvent({ severity: 'error', kind: 'server_error', message: `Sync server failed to start: ${error.message}`, result: 'failed' });
+      throw error;
+    }
     repo.setSettings({ enabled: true });
+    repo.logEvent({ kind: 'server_started', message: `Sync server started on ${address}:${running.port}.` });
     await importer.recover();
     retryTimer = setInterval(() => runRetries().catch(() => {}), 15000);
     retryTimer.unref?.();
@@ -52,11 +59,13 @@ function createService({ dataDir, resolveLibrary, listLibraries, indexPhoto, lib
   async function stop({ persist = true } = {}) {
     clearInterval(retryTimer);
     retryTimer = null;
+    const wasRunning = Boolean(running);
     if (server) await server.close();
     server = null;
     running = null;
     pairing = null;
     if (persist) repo.setSettings({ enabled: false });
+    if (wasRunning && persist) repo.logEvent({ kind: 'server_stopped', message: 'Sync server stopped.' });
     emit({ type: 'status' });
     return status();
   }
@@ -83,6 +92,7 @@ function createService({ dataDir, resolveLibrary, listLibraries, indexPhoto, lib
     const settings = repo.getSettings();
     const { code, expiresAt } = repo.createPairingCode(settings.pairingTtlSeconds);
     pairing = { code, expiresAt };
+    repo.logEvent({ category: 'security', kind: 'pairing_code_created', message: 'A one-time pairing code was generated.' });
     const link = `${url()}/app#code=${code}&fp=${encodeURIComponent(certificate?.fingerprint || '')}&v=1`;
     const qr = await QRCode.toDataURL(link, { errorCorrectionLevel: 'M', margin: 1, width: 240 });
     return { code: security.formatCode(code), expiresAt, link, qr };
@@ -94,8 +104,12 @@ function createService({ dataDir, resolveLibrary, listLibraries, indexPhoto, lib
     for (const key of ['bandwidthLimitKBps', 'maxFileSizeMB', 'minFreeSpaceMB']) {
       if (key in clean && !(Number.isFinite(clean[key]) && clean[key] >= 0)) delete clean[key];
     }
+    if ('pairingTtlSeconds' in clean && !(Number.isInteger(clean.pairingTtlSeconds) && clean.pairingTtlSeconds >= 30 && clean.pairingTtlSeconds <= 600)) delete clean.pairingTtlSeconds;
     if ('destinationFolder' in clean) clean.destinationFolder = String(clean.destinationFolder).trim().slice(0, 60) || 'Wi-Fi Sync';
+    const before = repo.getSettings();
     const next = repo.setSettings(clean);
+    const changed = Object.keys(next).filter(key => next[key] !== before[key]);
+    if (changed.length) repo.logEvent({ kind: 'config_changed', message: `Configuration changed: ${changed.join(', ')}.` });
     emit({ type: 'status' });
     return next;
   }
@@ -109,7 +123,18 @@ function createService({ dataDir, resolveLibrary, listLibraries, indexPhoto, lib
 
   async function retryAsset(id) { const asset = await importer.retry(id); emit({ type: 'assets' }); return asset; }
 
-  return { repo, importer, start, stop, status, createPairing, updateSettings, revokeDevice, retryAsset, isRunning: () => Boolean(running), close: () => { db.close(); } };
+  async function renameDevice(id, name) { const clean = repo.renameDevice(String(id), name); emit({ type: 'status' }); return clean; }
+  async function removeDevice(id) {
+    const result = repo.removeDevice(String(id));
+    result.cancelled.forEach(assetId => importer.discardTemp(assetId));
+    emit({ type: 'status' });
+    return result;
+  }
+
+  return {
+    repo, db, importer, start, stop, status, createPairing, updateSettings, revokeDevice, renameDevice, removeDevice, retryAsset,
+    startedAt: () => (running ? running.startedAt : null), isRunning: () => Boolean(running), close: () => { db.close(); }
+  };
 }
 
 module.exports = { createService };

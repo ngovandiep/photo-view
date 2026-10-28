@@ -2,6 +2,8 @@
 
 const { app, BrowserWindow, dialog, ipcMain, protocol } = require('electron');
 const crypto = require('node:crypto');
+const permissions = require('./permissions.cjs');
+const { createSessionStore } = require('./session-state.cjs');
 const { constants: fsConstants, createReadStream } = require('node:fs');
 const { Readable } = require('node:stream');
 const fs = require('node:fs/promises');
@@ -228,7 +230,9 @@ async function scanLibrary(event, libraryId, requestId) {
   const item = manifest.libraries.find(entry => entry.id === libraryId);
   if (item) item.lastScannedAt = new Date().toISOString();
   await writeJsonAtomic(manifestPath(), manifest);
-  return { files, folders: [...folders], inaccessiblePaths, errors, processed };
+  const result = { files, folders: [...folders], inaccessiblePaths, errors, processed };
+  await sessionStore().saveScan(libraryId, library.path, result).catch(() => {});
+  return result;
 }
 
 async function readPhoto(libraryId, relativePath) {
@@ -318,32 +322,54 @@ async function moveFolder(libraryId, fromRelative, toRelative) {
     await renameWithRetry(target, sourceReal).catch(() => {});
     throw error;
   }
+  await sessionStore().clearScan(libraryId).catch(() => {});
   app.emit('library-folder-moved', libraryId, from, to);
   return { moved: true, from, to };
 }
 
+// Writes are enforced here, not just hidden in the UI. Signed-out and view-only roles are read-only.
+let accountAuth = null;
+let sessionStoreInstance = null;
+// UI state follows the signed-in account; the scan cache is shared per library.
+const sessionStore = () => sessionStoreInstance || (sessionStoreInstance = createSessionStore({
+  dir: path.join(app.getPath('userData'), 'session'),
+  getUserKey: async () => { const user = accountAuth ? await accountAuth.getUser() : null; return user && Number.isInteger(user.id) ? `u${user.id}` : 'local'; },
+  maxFiles: maxIndexedFiles
+}));
+const requireCapability = (capability, work) => async (...args) => {
+  const role = accountAuth ? await accountAuth.getRole() : 'viewer';
+  if (!permissions.can(role, capability)) throw new Error(capability === 'sync' ? 'Your role is view-only and cannot manage Wi-Fi sync.' : 'Your role is view-only and cannot change the library.');
+  return work(...args);
+};
+
 function registerIpc() {
-  ipcMain.handle('folder:move', (_event, libraryId, from, to) => {
+  ipcMain.handle('folder:move', requireCapability('edit', (_event, libraryId, from, to) => {
     if (typeof from !== 'string' || typeof to !== 'string') throw new Error('Invalid folder request.');
     return moveFolder(libraryId, from, to);
-  });
+  }));
   ipcMain.handle('library:list', async () => {
     const manifest = await readManifest();
     return Promise.all(manifest.libraries.map(libraryStatus));
   });
-  ipcMain.handle('library:choose-folders', async () => {
+  ipcMain.handle('library:choose-folders', requireCapability('edit', async () => {
     const result = await dialog.showOpenDialog(mainWindow, { title: 'Select photo folders', properties: ['openDirectory', 'multiSelections'] });
     return result.canceled ? [] : registerFolders(result.filePaths);
-  });
+  }));
   ipcMain.handle('library:scan', (event, libraryId, requestId) => {
     if (typeof requestId !== 'string' || requestId.length > 64) throw new Error('Invalid scan request.');
     return scanLibrary(event, libraryId, requestId);
   });
+  ipcMain.handle('session:load', () => sessionStore().loadUi());
+  ipcMain.handle('session:save', (_event, ui) => sessionStore().saveUi(ui));
+  ipcMain.handle('library:cached-scan', async (_event, libraryId) => {
+    const library = await registeredLibrary(libraryId);
+    return sessionStore().loadScan(libraryId, library.path);
+  });
   ipcMain.handle('index:load', (_event, libraryId) => readIndex(libraryId));
-  ipcMain.handle('index:save', (_event, libraryId, index) => saveIndex(libraryId, index));
+  ipcMain.handle('index:save', requireCapability('edit', (_event, libraryId, index) => saveIndex(libraryId, index)));
   ipcMain.handle('index:backup', (_event, libraryId) => backupExistingIndex(libraryId));
-  ipcMain.handle('index:backup-legacy', (_event, libraryId, metadata) => backupLegacyMetadata(libraryId, metadata));
-  ipcMain.handle('index:import', async (_event, libraryId) => {
+  ipcMain.handle('index:backup-legacy', requireCapability('edit', (_event, libraryId, metadata) => backupLegacyMetadata(libraryId, metadata)));
+  ipcMain.handle('index:import', requireCapability('edit', async (_event, libraryId) => {
     await registeredLibrary(libraryId);
     const result = await dialog.showOpenDialog(mainWindow, { title: 'Import photo index', properties: ['openFile'], filters: [{ name: 'JSON index', extensions: ['json'] }] });
     if (result.canceled || !result.filePaths[0]) return null;
@@ -351,7 +377,7 @@ function registerIpc() {
     const stats = await fs.stat(file);
     if (!stats.isFile() || stats.size > maxIndexBytes) throw new Error('Selected index exceeds the 100 MB import limit.');
     return JSON.parse(await fs.readFile(file, 'utf8'));
-  });
+  }));
   ipcMain.handle('index:export', async (_event, libraryId, index) => {
     await registeredLibrary(libraryId);
     const validation = indexStore.validate(index);
@@ -410,6 +436,56 @@ function createWindow() {
   mainWindow.on('closed', () => { mainWindow = null; });
 }
 
+let accountServer;
+let accountDb = null;
+let accountChat = null;
+async function startAccountServer() {
+  const directory = path.join(app.getPath('userData'), 'account-server');
+  await fs.mkdir(directory, { recursive: true });
+  // The signing secret is kept stable so sessions survive restarts.
+  const secretFile = path.join(directory, 'jwt-secret');
+  let secret = process.env.JWT_SECRET || await fs.readFile(secretFile, 'utf8').catch(() => '');
+  if (!secret) {
+    secret = crypto.randomBytes(32).toString('hex');
+    await fs.writeFile(secretFile, secret, { encoding: 'utf8', mode: 0o600 });
+  }
+  const { openDb } = require('../server/db');
+  const { createApp } = require('../server/app');
+  const database = openDb(process.env.DB_PATH || path.join(directory, 'still.db'));
+  const server = createApp(database, { secret });
+  await new Promise((resolve, reject) => {
+    server.once('error', error => (error.code === 'EADDRINUSE' ? resolve() : reject(error)));
+    server.listen(Number(process.env.PORT) || 3000, '127.0.0.1', () => { accountServer = server; accountDb = database; accountChat = server.chat; startChatMaintenance(); resolve(); });
+  });
+}
+// Chat history is kept for 90 days; the admin window is told about activity without message bodies.
+function startChatMaintenance() {
+  const purge = () => { try { accountChat.purge(90); } catch (error) { console.error('Chat purge failed:', error.message); } };
+  purge();
+  setInterval(purge, 6 * 60 * 60 * 1000).unref();
+  accountChat.hub.on('admin', event => {
+    for (const win of BrowserWindow.getAllWindows()) if (!win.isDestroyed()) win.webContents.send('admin:chat-event', { type: event.type, userId: event.userId, unread: accountChat.unreadForAdmin() });
+  });
+}
+// Password hashes are never selected; the admin dashboard only sees profile fields.
+const userAdmin = () => {
+  if (!accountDb) throw new Error('The account directory is not available from this app.');
+  return require('../server/admin-users').createUserAdmin(accountDb);
+};
+const listAccountUsers = () => (accountDb ? userAdmin().list() : null);
+const createAccountUser = input => userAdmin().create(input || {});
+const setAccountUserRole = (userId, role) => userAdmin().setRole(userId, role);
+// Disabling blocks sign-in and any existing token immediately; the user's data is kept so access can be restored.
+const setAccountUserDisabled = (userId, disabled) => {
+  if (!accountDb) throw new Error('The account directory is not available from this app.');
+  const found = accountDb.prepare('SELECT id, email FROM users WHERE id = ?').get(Number(userId));
+  if (!found) throw new Error('User not found.');
+  accountDb.prepare(disabled ? "UPDATE users SET disabled_at = COALESCE(disabled_at, datetime('now')) WHERE id = ?" : 'UPDATE users SET disabled_at = NULL WHERE id = ?').run(found.id);
+  if (disabled) accountDb.prepare("UPDATE refresh_tokens SET revoked_at = COALESCE(revoked_at, datetime('now')) WHERE user_id = ?").run(found.id);
+  return { id: found.id, email: found.email };
+};
+app.on('will-quit', () => { if (accountServer) accountServer.close(); });
+
 const hasInstance = app.requestSingleInstanceLock();
 if (!hasInstance) app.quit();
 else {
@@ -420,7 +496,7 @@ else {
     session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
     protocol.handle('still-media', handleMediaRequest);
     registerIpc();
-    const authApi = require('./auth.cjs').register({
+    const authApi = accountAuth = require('./auth.cjs').register({
       app,
       ipcMain,
       safeStorage: require('electron').safeStorage,
@@ -430,6 +506,7 @@ else {
         save: saveIndex
       }
     });
+    const userChat = require('./chat-client.cjs').register({ ipcMain, auth: { ...authApi.chatContext }, BrowserWindow, Notification: require('electron').Notification });
     require('./wifi-sync/ipc.cjs').register({
       app,
       ipcMain,
@@ -440,8 +517,16 @@ else {
       saveIndex,
       indexStore,
       getAccount: authApi.getUser,
-      verifyLogin: authApi.verifyLogin
+      verifyLogin: authApi.verifyLogin,
+      permit: async capability => permissions.can(await authApi.getRole(), capability),
+      listAccountUsers,
+      setAccountUserDisabled,
+      createAccountUser,
+      setAccountUserRole,
+      getChat: () => accountChat,
+      userChat
     });
+    startAccountServer().catch(error => console.error('Account server did not start:', error.message));
     createWindow();
   }).catch(error => {
     dialog.showErrorBox('Still could not start', error.message);

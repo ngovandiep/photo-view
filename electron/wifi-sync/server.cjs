@@ -18,6 +18,8 @@ const WEB_FILES = {
   '/app': ['app.html', 'text/html; charset=utf-8'],
   '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
   '/app.css': ['app.css', 'text/css; charset=utf-8'],
+  '/chat.js': ['chat.js', 'text/javascript; charset=utf-8'],
+  '/chat.css': ['chat.css', 'text/css; charset=utf-8'],
   '/manifest.webmanifest': ['manifest.webmanifest', 'application/manifest+json']
 };
 const COOKIE = 'still_device';
@@ -34,6 +36,7 @@ function createSyncServer({ repo, importer, tls, libraryApi = null, webDir = pat
   const apiLimiter = createLimiter(rateLimits.api || 600, 60000, now);
   const browseLimiter = createLimiter(rateLimits.browse || 6000, 60000, now);
   const authFailLimiter = createLimiter(rateLimits.authFail || 30, 60000, now);
+  const auditLimiter = createLimiter(1, 60000, now);
 
   function createLimiter(limit, windowMs, clock) { return security.createRateLimiter({ limit, windowMs, now: clock }); }
 
@@ -59,14 +62,14 @@ function createSyncServer({ repo, importer, tls, libraryApi = null, webDir = pat
     send(res, 500, { error: { code: 'internal_error', message: 'Unexpected server error.' } });
   }
 
-  async function readJson(req) {
+  async function readJson(req, limit = JSON_LIMIT) {
     const length = Number(req.headers['content-length'] || 0);
-    if (length > JSON_LIMIT) throw new HttpError(413, 'too_large', 'Request body too large.');
+    if (length > limit) throw new HttpError(413, 'too_large', 'Request body too large.');
     const chunks = [];
     let total = 0;
     for await (const chunk of req) {
       total += chunk.length;
-      if (total > JSON_LIMIT) throw new HttpError(413, 'too_large', 'Request body too large.');
+      if (total > limit) throw new HttpError(413, 'too_large', 'Request body too large.');
       chunks.push(chunk);
     }
     if (!total) return {};
@@ -94,6 +97,8 @@ function createSyncServer({ repo, importer, tls, libraryApi = null, webDir = pat
     const device = repo.authenticate(token);
     if (!device) {
       authFailLimiter.take(ip);
+      // At most one audit row per client per minute so a scan cannot flood the log.
+      if (auditLimiter.take(ip)) repo.logEvent({ category: 'security', severity: 'warning', kind: 'auth_failed', message: `Rejected request with a missing, invalid or revoked device token from ${ip}.`, result: 'denied' });
       throw new HttpError(401, 'unauthorized', 'Missing, invalid or revoked device token.');
     }
     // Cookie-authenticated writes must come from our own page (custom header cannot be sent cross-site without CORS).
@@ -141,13 +146,19 @@ function createSyncServer({ repo, importer, tls, libraryApi = null, webDir = pat
       return;
     }
     if (route === '/pairing/claim' && method === 'POST') {
-      if (!pairLimiter.take(ip)) throw new HttpError(429, 'rate_limited', 'Too many pairing attempts. Wait a minute.');
+      if (!pairLimiter.take(ip)) {
+        repo.logEvent({ category: 'security', severity: 'warning', kind: 'pairing_rejected', message: `Pairing attempts from ${ip} were rate limited.`, result: 'denied' });
+        throw new HttpError(429, 'rate_limited', 'Too many pairing attempts. Wait a minute.');
+      }
       const body = await readJson(req);
       const name = String(body.deviceName || '').trim().slice(0, 60);
       const platform = String(body.platform || 'unknown').trim().slice(0, 30);
       if (!body.code || !name) throw new HttpError(400, 'invalid_request', 'code and deviceName are required.');
       const device = repo.claimPairingCode(body.code, name, platform);
-      if (!device) throw new HttpError(403, 'invalid_code', 'Pairing code is invalid, expired or already used.');
+      if (!device) {
+        repo.logEvent({ category: 'security', severity: 'warning', kind: 'pairing_rejected', message: `Pairing rejected for "${name}": invalid, expired or already used code.`, result: 'denied' });
+        throw new HttpError(403, 'invalid_code', 'Pairing code is invalid, expired or already used.');
+      }
       onChange({ type: 'device-paired', deviceId: device.id });
       send(res, 201, { deviceId: device.id, token: device.token, apiVersion: 1 });
       return;
@@ -164,7 +175,7 @@ function createSyncServer({ repo, importer, tls, libraryApi = null, webDir = pat
       send(res, 200, { ok: true }, { 'Set-Cookie': `${COOKIE}=; HttpOnly; SameSite=Strict; Path=${API}; Max-Age=0${tls ? '; Secure' : ''}` });
       return;
     }
-    if (libraryApi && await libraryApi.handle({ req, res, route, url, device, send, readJson, HttpError })) return;
+    if (libraryApi && await libraryApi.handle({ req, res, route, url, device, send, readJson, HttpError, isActive: () => Boolean(repo.authenticate(device.token)) })) return;
 
     if (route === '/device' && method === 'GET') {
       send(res, 200, { id: device.id, name: device.name, platform: device.platform, lastSyncAt: device.last_sync_at });

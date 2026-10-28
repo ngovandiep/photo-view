@@ -74,6 +74,15 @@ The sync server also serves a mobile web app at `https://<ip>:<port>/` (and `/ap
 - The server only accepts private-network clients. To use it away from home, connect the phone with a VPN to your home network (for example WireGuard or Tailscale) rather than exposing the port to the internet.
 - Routes (device token required): `GET /api/v1/me`, `GET /libraries`, `GET /libraries/{id}/items?kind=&q=&favorite=1&offset=&limit=`, `GET /libraries/{id}/file?path=`, `GET /libraries/{id}/thumb?path=&w=`, `POST /libraries/{id}/favorite {path, favorite}`, `POST|DELETE /session` (cookie).
 
+## Chat with admin and notifications on the phone
+
+- The 💬 button in the phone app opens **Chat with admin** and **Notifications** — the same conversation as the desktop's 💬 panel. Users can send text and photos (photos are shrunk on the phone to about 1600 px, at most ~1.4 MB). Admins reply from the desktop admin dashboard (Messages page).
+- Available only when the desktop is signed in to an account and the phone is signed in to that same account (`/me` reports `chat: true`). The phone never receives the account token: the desktop relays every request to the account server.
+- Every device of a user is notified: the desktop (in-app badge + OS notification when unfocused) and every signed-in phone (live badge, `(n)` title prefix, app badge, vibration and a tap-to-open banner; a system notification is shown only where the browser allows it). Reading on any device clears the unread counts everywhere.
+- Phone alerts work while the phone page is open (foreground or recently backgrounded tab). The self-signed HTTPS certificate prevents service workers, so there is no background push when the browser is closed.
+- Signing out on the desktop or the phone ends the phone's live stream immediately.
+- Routes (device token or cookie, phone signed in): `GET /chat/stream` (Server-Sent Events: `unread`, `message`, `notification`, `status`), `GET /chat/status`, `GET /chat/messages?after=`, `POST /chat/messages {text, image?:{type,data(base64)}}` (png/jpeg/gif/webp), `POST /chat/read`, `GET /chat/notifications`, `POST /chat/notifications/read {ids?}`, `GET /chat/images/{id}`. Errors: `403 login_required`, `409 chat_unavailable` (desktop signed out), `503 chat_offline` (account server unreachable).
+
 ## Data and migrations
 
 State is kept in `wifi-sync/wifi-sync.db` (SQLite via Node's built-in `node:sqlite`, which prints an experimental warning). Schema migrations use `PRAGMA user_version`; migration 1 creates `settings`, `pairing_codes`, `devices`, `sync_sessions`, `assets` and `idempotent_responses`. The existing JSON photo index is unchanged; imported images are added to it through `indexStore.addPhoto`.

@@ -1,16 +1,24 @@
 'use strict';
 const http = require('node:http');
+const { normalizeRole } = require('./roles');
+const { createChat } = require('./chat');
 const { hashPassword, verifyPassword, signJwt, verifyJwt } = require('./auth');
 
 const TOKEN_TTL_SECONDS = 7 * 24 * 3600;
 const MAX_BODY = 10 * 1024;
 const MAX_SYNC_BODY = 20 * 1024 * 1024;
+const MAX_CHAT_BODY = 3 * 1024 * 1024;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const DUMMY_HASH = hashPassword('dummy-password');
 
 function createApp(db, { secret, maxAttempts = 10, windowMs = 15 * 60 * 1000 } = {}) {
   if (!secret) { throw new Error('A JWT secret is required.'); }
   const attempts = new Map();
+  const chat = createChat(db);
+  const streams = new Map();
+  chat.hub.on('user', (userId, event) => {
+    for (const res of streams.get(userId) || []) res.write(`data: ${JSON.stringify(event)}\n\n`);
+  });
 
   const send = (res, status, body) => {
     res.writeHead(status, {
@@ -45,7 +53,7 @@ function createApp(db, { secret, maxAttempts = 10, windowMs = 15 * 60 * 1000 } =
   };
   const recordAttempt = key => attempts.set(key, [...(attempts.get(key) || []), Date.now()]);
 
-  const publicUser = row => ({ id: row.id, email: row.email, displayName: row.display_name });
+  const publicUser = row => ({ id: row.id, email: row.email, displayName: row.display_name, role: normalizeRole(row.role) });
   const issue = row => ({ token: signJwt({ sub: String(row.id) }, secret, TOKEN_TTL_SECONDS), user: publicUser(row) });
 
   async function route(req, res) {
@@ -73,6 +81,7 @@ function createApp(db, { secret, maxAttempts = 10, windowMs = 15 * 60 * 1000 } =
       const row = db.prepare('SELECT * FROM users WHERE email = ? AND password_hash IS NOT NULL').get(email);
       const ok = verifyPassword(password, row ? row.password_hash : DUMMY_HASH);
       if (!row || !ok) { return send(res, 401, { error: 'Invalid email or password.' }); }
+      if (row.disabled_at) { return send(res, 403, { error: 'This account has been disabled by an administrator.' }); }
       db.prepare("UPDATE users SET last_login_at = datetime('now') WHERE id = ?").run(row.id);
       attempts.delete(key);
       return send(res, 200, issue(row));
@@ -81,12 +90,44 @@ function createApp(db, { secret, maxAttempts = 10, windowMs = 15 * 60 * 1000 } =
     const authedUser = () => {
       const match = /^Bearer (.+)$/.exec(req.headers.authorization || '');
       const payload = match && verifyJwt(match[1], secret);
-      return payload ? db.prepare('SELECT * FROM users WHERE id = ?').get(Number(payload.sub)) : null;
+      const user = payload ? db.prepare('SELECT * FROM users WHERE id = ?').get(Number(payload.sub)) : null;
+      return user && !user.disabled_at ? user : null;
     };
 
-    if (pathname === '/auth/me' || pathname.startsWith('/sync/')) {
+    if (pathname === '/auth/me' || pathname.startsWith('/sync/') || pathname.startsWith('/chat/')) {
       const row = authedUser();
       if (!row) { return send(res, 401, { error: 'Unauthorized.' }); }
+
+      if (pathname.startsWith('/chat/')) {
+        const params = new URL(req.url, 'http://localhost').searchParams;
+        if (pathname === '/chat/stream' && req.method === 'GET') {
+          res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive', 'Access-Control-Allow-Origin': '*' });
+          res.write(`data: ${JSON.stringify({ type: 'ready', unread: chat.unreadForUser(row.id) })}\n\n`);
+          if (!streams.has(row.id)) streams.set(row.id, new Set());
+          streams.get(row.id).add(res);
+          const beat = setInterval(() => res.write(': keep-alive\n\n'), 25000);
+          req.on('close', () => { clearInterval(beat); const set = streams.get(row.id); if (set) { set.delete(res); if (!set.size) streams.delete(row.id); } });
+          return;
+        }
+        if (pathname === '/chat/messages' && req.method === 'GET') {
+          return send(res, 200, { ...chat.thread(row.id, { after: params.get('after') }), unread: chat.unreadForUser(row.id) });
+        }
+        if (pathname === '/chat/messages' && req.method === 'POST') {
+          const body = await readJson(req, MAX_CHAT_BODY);
+          return send(res, 201, { message: chat.post(row.id, 'user', body) });
+        }
+        if (pathname === '/chat/read' && req.method === 'POST') { return send(res, 200, chat.markRead(row.id, 'user')); }
+        const picture = /^\/chat\/images\/(\d+)$/.exec(pathname);
+        if (picture && req.method === 'GET') { return send(res, 200, chat.image(picture[1], row.id)); }
+        if (pathname === '/chat/notifications' && req.method === 'GET') {
+          return send(res, 200, { notifications: chat.notificationsFor(row.id), unread: chat.unreadForUser(row.id) });
+        }
+        if (pathname === '/chat/notifications/read' && req.method === 'POST') {
+          const body = await readJson(req);
+          return send(res, 200, chat.readNotifications(row.id, Array.isArray(body.ids) ? body.ids : null));
+        }
+        return send(res, 404, { error: 'Not found.' });
+      }
 
       if (pathname === '/auth/me' && req.method === 'GET') { return send(res, 200, { user: publicUser(row) }); }
 
@@ -120,9 +161,12 @@ function createApp(db, { secret, maxAttempts = 10, windowMs = 15 * 60 * 1000 } =
     return send(res, 404, { error: 'Not found.' });
   }
 
-  return http.createServer((req, res) => {
-    route(req, res).catch(err => send(res, err.status || 500, { error: err.status ? err.message : 'Server error.' }));
+  const server = http.createServer((req, res) => {
+    route(req, res).catch(err => { if (res.headersSent) { res.end(); return; } send(res, err.status || 500, { error: err.status ? err.message : 'Server error.' }); });
   });
+  server.chat = chat;
+  server.on('close', () => { for (const set of streams.values()) for (const res of set) res.end(); });
+  return server;
 }
 
 module.exports = { createApp };

@@ -82,6 +82,23 @@ const MIGRATIONS = [
   `
   ALTER TABLE assets ADD COLUMN folder_path TEXT;
   ALTER TABLE assets ADD COLUMN device_deleted_at INTEGER;
+  `,
+  `
+  ALTER TABLE devices ADD COLUMN removed_at INTEGER;
+
+  CREATE TABLE activity_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts INTEGER NOT NULL,
+    category TEXT NOT NULL CHECK (category IN ('operational', 'security')),
+    severity TEXT NOT NULL CHECK (severity IN ('info', 'warning', 'error')),
+    kind TEXT NOT NULL,
+    message TEXT NOT NULL,
+    device_id TEXT,
+    session_id TEXT,
+    result TEXT NOT NULL DEFAULT 'success'
+  );
+  CREATE INDEX idx_activity_ts ON activity_log(ts DESC);
+  CREATE INDEX idx_activity_device ON activity_log(device_id);
   `
 ];
 
