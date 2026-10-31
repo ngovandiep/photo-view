@@ -9,6 +9,7 @@ const FINAL_STATES = new Set(['indexed', 'failed_permanent', 'cancelled']);
 
 const DEFAULT_SETTINGS = {
   enabled: false,
+  familyEnabled: false,
   port: 8443,
   destinationLibraryId: '',
   destinationFolder: 'Wi-Fi Sync',
@@ -19,7 +20,7 @@ const DEFAULT_SETTINGS = {
   wifiOnly: true
 };
 
-function createRepo(db, { now = Date.now } = {}) {
+function createRepo(db, { now = Date.now, listAccounts = null } = {}) {
   const q = sql => db.prepare(sql);
 
   function getSettings() {
@@ -142,9 +143,9 @@ function createRepo(db, { now = Date.now } = {}) {
     }
     const id = crypto.randomUUID();
     const stamp = now();
-    q(`INSERT INTO assets (id, device_id, session_id, source_asset_id, filename, media_type, media_kind, size, captured_at, state, created_at, updated_at, folder_path)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'discovered', ?, ?, ?)`)
-      .run(id, deviceId, sessionId, meta.sourceAssetId, meta.filename, meta.mediaType, meta.kind, meta.size, meta.capturedAt, stamp, stamp, meta.folderPath || null);
+    q(`INSERT INTO assets (id, device_id, session_id, source_asset_id, filename, media_type, media_kind, size, captured_at, state, created_at, updated_at, folder_path, expected_sha256)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'discovered', ?, ?, ?, ?)`)
+      .run(id, deviceId, sessionId, meta.sourceAssetId, meta.filename, meta.mediaType, meta.kind, meta.size, meta.capturedAt, stamp, stamp, meta.folderPath || null, meta.expectedSha256 || null);
     return { asset: q('SELECT * FROM assets WHERE id = ?').get(id), created: true };
   }
 
@@ -193,6 +194,22 @@ function createRepo(db, { now = Date.now } = {}) {
     return update(id, { state: asset.bytes_received >= asset.size ? 'uploading' : 'queued', retry_count: 0, next_retry_at: null, last_error: null });
   }
 
+  const CANCELLABLE = ['discovered', 'queued', 'uploading', 'failed_retryable'];
+  // Cancelling only closes the desktop job; files already placed in the library are never touched.
+  function cancelAsset(id) {
+    return transaction(db, () => {
+      const asset = getAsset(id);
+      if (!asset) throw new Error('Upload job not found.');
+      if (!CANCELLABLE.includes(asset.state)) throw new Error('Only pending, uploading or retrying jobs can be cancelled.');
+      if (asset.library_path && asset.stored_at) throw new Error('This file is already in the library; retry indexing instead of cancelling.');
+      const result = q(`UPDATE assets SET state = 'cancelled', next_retry_at = NULL, last_error = 'Cancelled by administrator.', updated_at = ? WHERE id = ? AND state IN (${CANCELLABLE.map(() => '?').join(',')})`)
+        .run(now(), id, ...CANCELLABLE);
+      if (result.changes !== 1) throw new Error('The job changed state; refresh and try again.');
+      logEvent({ severity: 'warning', kind: 'asset_cancelled', message: `Upload job for ${asset.filename} was cancelled by an administrator.`, deviceId: asset.device_id, sessionId: asset.session_id, result: 'cancelled' });
+      return getAsset(id);
+    });
+  }
+
   const touchDeviceSync = deviceId => q('UPDATE devices SET last_sync_at = ? WHERE id = ?').run(now(), deviceId);
 
   function relocate(libraryId, from, to) {
@@ -210,11 +227,13 @@ function createRepo(db, { now = Date.now } = {}) {
       .run(deviceId, key, endpoint, status, JSON.stringify(body), now());
   }
 
-  return {
+  const repo = {
     db, now, getSettings, setSettings, createPairingCode, claimPairingCode, authenticate, listDevices, revokeDevice, renameDevice, removeDevice, logEvent,
     createSession, getSession, completeSession, registerAsset, getAsset, getDeviceAsset, update, failRetryable, failPermanent,
-    progress, stats, requeue, touchDeviceSync, relocate, getIdempotent, putIdempotent
+    progress, stats, requeue, cancelAsset, touchDeviceSync, relocate, getIdempotent, putIdempotent
   };
+  repo.family = require('./family.cjs').createFamily(repo, listAccounts);
+  return repo;
 }
 
 module.exports = { createRepo, DEFAULT_SETTINGS, MAX_RETRIES, FINAL_STATES };

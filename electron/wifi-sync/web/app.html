@@ -1,20 +1,51 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-brand-title="{syncName}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#32654c">
-  <title>Still</title>
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="MiLeo">
+  <title>MiLeo Sync</title>
   <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/icon-180.png">
+  <link rel="icon" type="image/png" href="/icon-192.png">
+  <link rel="stylesheet" href="/install.css">
   <link rel="stylesheet" href="/app.css">
   <link rel="stylesheet" href="/chat.css">
-  <script defer src="/chat.js"></script>
+  <script defer src="/brand.js"></script>
   <script defer src="/app.js"></script>
+  <script defer src="/install.js"></script>
 </head>
 <body>
+  <aside id="phone-install" class="phone-install" aria-label="Install MiLeo Sync" data-brand-label="Install {syncName}">
+    <div class="phone-install-bar">
+      <img src="/icon-192.png" alt="" width="40" height="40" data-brand-logo>
+      <div class="phone-install-text"><strong data-brand-text="Install {syncName}">Install MiLeo Sync</strong><span>Add it to your Home Screen</span></div>
+      <button id="phone-pwa-install" type="button" aria-expanded="false" aria-controls="a2hs-guide">Add to Home Screen</button>
+      <button id="phone-install-close" type="button" class="phone-install-close" aria-label="Hide install bar">✕</button>
+    </div>
+    <p id="phone-pwa-status" class="phone-install-note" role="status" aria-live="polite"></p>
+    <p id="phone-connection-status" class="phone-install-note" role="status" aria-live="polite"></p>
+  </aside>
+  <div id="a2hs-guide" class="a2hs-guide" role="dialog" aria-modal="true" aria-labelledby="a2hs-title" hidden>
+    <div class="a2hs-arrow" aria-hidden="true">➜</div>
+    <div class="a2hs-card">
+      <h2 id="a2hs-title" data-brand-text="Add {shortName} to your Home Screen">Add MiLeo to your Home Screen</h2>
+      <ol id="a2hs-steps"></ol>
+      <p id="phone-pwa-support" class="a2hs-note"></p>
+      <details id="phone-install-help" class="a2hs-more">
+        <summary>More about Wi-Fi and the certificate</summary>
+        <p>Stay on the same Wi-Fi as your Desktop and keep <span data-brand="appName">MiLeo Photo Library</span> running there. Photos and sync need a live Desktop connection; offline support stores only the app shell, never your photos.</p>
+        <p>The Desktop uses a self-signed HTTPS certificate. Only trust it after comparing its fingerprint with the Desktop. Full app mode and offline support need the phone to trust it; the Home Screen shortcut works either way.</p>
+      </details>
+      <button id="a2hs-close" type="button" class="primary">Got it</button>
+    </div>
+  </div>
   <section id="pair-screen" hidden>
     <div class="pair-card">
-      <div class="logo">s</div>
+      <div class="logo" aria-hidden="true">M</div>
+      <p class="brand-line"><strong data-brand="syncName">MiLeo Sync</strong><span data-brand="tagline">Your memories. Your library. Your world.</span></p>
       <h1>Connect to your library</h1>
       <p>Scan the QR code in the desktop app (Wi-Fi Sync → Show pairing code), or type the code here.</p>
       <input id="code" autocomplete="off" autocapitalize="characters" placeholder="ABCD-EFGH" aria-label="Pairing code">
@@ -26,9 +57,10 @@
 
   <section id="login-screen" hidden>
     <form class="pair-card" id="login-form">
-      <div class="logo">s</div>
+      <div class="logo" aria-hidden="true">M</div>
+      <p class="brand-line"><strong data-brand="syncName">MiLeo Sync</strong><span data-brand="tagline">Your memories. Your library. Your world.</span></p>
       <h1>Sign in</h1>
-      <p>Use the account that is signed in on your computer.</p>
+      <p id="login-help">Use the account that is signed in on your computer.</p>
       <input id="login-email" type="email" autocomplete="username" placeholder="Email" aria-label="Email" required>
       <input id="login-password" type="password" autocomplete="current-password" placeholder="Password" aria-label="Password" required>
       <button type="submit" class="primary">Sign in</button>
@@ -41,6 +73,7 @@
       <div class="top-row">
         <h1>Your library</h1>
         <div class="spacer"></div>
+        <button id="header-install" class="text-btn" type="button" aria-label="Add MiLeo to Home Screen" data-brand-label="Add {shortName} to Home Screen">📱 Install</button>
         <button id="select-toggle" class="text-btn" type="button">Select</button>
         <button id="menu" class="icon" aria-label="Menu">⋮</button>
       </div>
@@ -54,8 +87,9 @@
       <div class="menu-panel" id="menu-panel" hidden>
         <p id="account-line"></p>
         <label>Library <select id="library-select"></select></label>
+        <label id="album-filter" hidden>Shared album <select id="album-select"></select></label>
         <a href="/device" class="menu-link">Manage this phone's photos</a>
-        <a href="/pair" class="menu-link">Send photos to this computer</a>
+        <a id="send-photos" href="/pair" class="menu-link">Send photos to this computer</a>
         <button id="logout" type="button" hidden>Sign out</button>
         <button id="unpair" type="button" class="danger">Unpair this phone</button>
       </div>

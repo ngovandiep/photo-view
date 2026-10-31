@@ -31,6 +31,7 @@
     list: 'M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01',
     drive: 'M22 12H2M5.5 5h13l3.5 7v6a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-6zM6 16h.01M10 16h.01',
     sliders: 'M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6',
+    brand: 'M3 5h18v14H3zM8.5 11a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3zM21 15l-5-5L5 19',
     back: 'M19 12H5M12 19l-7-7 7-7',
     close: 'M18 6L6 18M6 6l12 12',
     download: 'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3',
@@ -38,6 +39,7 @@
     shield: 'M12 2l8 3v6c0 5-3.5 9-8 11-4.5-2-8-6-8-11V5z',
     chat: 'M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z',
     up: 'M6 15l6-6 6 6',
+    queue: 'M12 3v12M7 10l5 5 5-5M4 21h16',
     down: 'M6 9l6 6 6-6'
   };
   function icon(name) {
@@ -86,7 +88,9 @@
     info: ['Info', ''], warning: ['Warning', 'warn'],
     stopped: ['Stopped', ''],
     indexed: ['Indexed', 'ok'], stored: ['Stored', 'ok'], uploading: ['Uploading', 'info'], discovered: ['Discovered', ''], failed_retryable: ['Will retry', 'warn'], failed_permanent: ['Failed', 'bad'],
-    ok: ['OK', 'ok'], working: ['Working', 'info'], idle: ['Idle', ''], success: ['Success', 'ok'], denied: ['Denied', 'warn'], partial: ['Partial', 'warn'], will_retry: ['Will retry', 'warn']
+    ok: ['OK', 'ok'], working: ['Working', 'info'], idle: ['Idle', ''], success: ['Success', 'ok'], denied: ['Denied', 'warn'], partial: ['Partial', 'warn'], will_retry: ['Will retry', 'warn'],
+    pending: ['Pending', ''], verifying: ['Verifying', 'info'], imported: ['Imported', 'ok'], duplicate: ['Duplicate', 'info'],
+    verified: ['SHA-256 verified', 'ok'], mismatch: ['Checksum mismatch', 'bad'], not_verified: ['Not verified yet', ''], paused: ['Paused', 'warn']
   };
   const statusBadge = (key, label) => {
     const [text, tone] = STATUS[key] || [label || String(key), ''];

@@ -33,7 +33,7 @@
     panel.id = 'wifi-panel';
     panel.hidden = true;
     panel.setAttribute('role', 'dialog');
-    panel.setAttribute('aria-label', 'Wi-Fi Photo Sync');
+    panel.setAttribute('aria-label', window.AppBrand?.current.syncName || 'MiLeo Sync');
     document.body.append(backdrop, panel);
     document.addEventListener('keydown', event => { if (event.key === 'Escape' && !panel.hidden) close(); });
 
@@ -105,7 +105,7 @@
     if (!panel || !status) return;
     panel.replaceChildren();
     const head = el('div', 'wifi-head');
-    head.append(el('h2', '', 'Wi-Fi Photo Sync'));
+    head.append(el('h2', '', window.AppBrand?.current.syncName || 'MiLeo Sync'));
     const closeButton = el('button', 'wifi-close', '✕');
     closeButton.type = 'button';
     closeButton.setAttribute('aria-label', 'Close');

@@ -2,7 +2,7 @@
 
 // Main-process chat client: keeps a live SSE connection to the account server for the signed-in
 // user, relays events to the renderer and to paired phones, raises OS notifications, and proxies chat requests.
-function register({ ipcMain, auth, BrowserWindow, Notification }) {
+function register({ ipcMain, auth, BrowserWindow, Notification, appName = () => 'MiLeo Photo Library' }) {
   let abort = null;
   let generation = 0;
   let unread = { messages: 0, notifications: 0 };
@@ -28,7 +28,7 @@ function register({ ipcMain, auth, BrowserWindow, Notification }) {
     const incoming = (event.type === 'message' && event.sender === 'admin') || event.type === 'notification';
     if (incoming && Notification.isSupported() && !focused()) {
       new Notification({
-        title: event.type === 'notification' ? (event.title || 'Still Photo Library') : 'Message from admin',
+        title: event.type === 'notification' ? (event.title || appName()) : 'Message from admin',
         body: String(event.preview || event.body || '').slice(0, 200)
       }).show();
     }

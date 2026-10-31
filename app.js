@@ -12,7 +12,7 @@
   const preferenceKey = 'still-photo-library-ui-v1';
   const indexStore = window.PhotoIndexStore;
   const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
-  const state = { photos: [], filtered: [], folders: new Map(), discoveredIds: new Set(), root: '', scanCompleted: false, view: 'photos', kind: 'photo', folder: '', collection: '', page: 0, busy: false, generation: 0, metadataPass: 0, viewerIndex: 0, viewerList: [], viewerToken: 0, viewerUrls: new Map(), gridUrls: new Set(), zoom: 1, panX: 0, panY: 0, index: indexStore.create(), indexById: new Map(), indexDirty: false, inaccessiblePaths: [], storageAvailable: true, desktopLibraryId: '', desktopLibraries: [], thumbCache: new Map(), activation: 0, pendingUi: null, sessionKey: '', restoring: false };
+  const state = { photos: [], filtered: [], folders: new Map(), discoveredIds: new Set(), root: '', scanCompleted: false, view: 'photos', kind: 'photo', folder: '', collection: '', page: 0, busy: false, generation: 0, metadataPass: 0, viewerIndex: 0, viewerList: [], viewerToken: 0, viewerUrls: new Map(), gridUrls: new Set(), zoom: 1, panX: 0, panY: 0, index: indexStore.create(), indexById: new Map(), indexDirty: false, inaccessiblePaths: [], storageAvailable: true, desktopLibraryId: '', desktopLibraries: [], pinnedLibraries: [], pinnedFoldersByLibrary: {}, thumbCache: new Map(), activation: 0, pendingUi: null, sessionKey: '', restoring: false, switchingAccount: false };
   let observer;
   let photoSwipe;
   let leavingPhotoSwipe = null;
@@ -20,6 +20,7 @@
   let desktopSaveTimer;
   let desktopSaveQueue = Promise.resolve();
   let returnFocus;
+  let contextFolderPath = '';
   const nextFrame = () => new Promise(resolve => setTimeout(resolve, 0));
   const normalize = value => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase();
   const formatNumber = value => value.toLocaleString();
@@ -29,6 +30,7 @@
     if (!window.lucide?.icons[name]) return make('span', '', fallback);
     const element = window.lucide.createElement(window.lucide.icons[name]); element.setAttribute('class', 'lucide'); element.setAttribute('width', '20'); element.setAttribute('height', '20'); element.setAttribute('aria-hidden', 'true'); return element;
   }
+
   function favoriteIcon(button, selected) { button.replaceChildren(icon('Heart', selected ? '♥' : '♡')); button.classList.toggle('selected', selected); button.setAttribute('aria-pressed', String(selected)); }
 
   function filenameDate(name) {
@@ -128,7 +130,31 @@
 
   // Last-session state: remembered per account in the main process and re-applied after sign-in or restart.
   function captureUi() {
-    return { libraryId: state.desktopLibraryId, view: state.view, kind: state.kind, folder: state.folder, collection: state.collection, search: byId('search').value.trim(), type: byId('type-filter').value, sort: byId('sort').value, page: state.page };
+    return { libraryId: state.desktopLibraryId, view: state.view, kind: state.kind, folder: state.folder, collection: state.collection, search: byId('search').value.trim(), type: byId('type-filter').value, sort: byId('sort').value, page: state.page, pinnedLibraries: state.pinnedLibraries, pinnedFoldersByLibrary: state.pinnedFoldersByLibrary };
+  }
+  function folderPins(libraryId = state.desktopLibraryId) { return state.pinnedFoldersByLibrary[libraryId] || []; }
+  function setPinnedFolder(path, pinned, libraryId = state.desktopLibraryId) {
+    if (!path || !libraryId) return;
+    const pins = new Set(folderPins(libraryId));
+    if (pinned) pins.add(path); else pins.delete(path);
+    state.pinnedFoldersByLibrary[libraryId] = [...pins];
+    renderFolderTree(); scheduleUiSave();
+  }
+  function relocateFolderPins(from, to) {
+    const pins = folderPins().map(folder => folder === from ? to : folder.startsWith(`${from}/`) ? `${to}${folder.slice(from.length)}` : folder);
+    state.pinnedFoldersByLibrary[state.desktopLibraryId] = [...new Set(pins)];
+  }
+  function setPinnedLibrary(libraryId, pinned) {
+    if (!libraryId) return;
+    const pins = new Set(state.pinnedLibraries);
+    if (pinned) pins.add(libraryId); else pins.delete(libraryId);
+    state.pinnedLibraries = [...pins];
+    renderDesktopLibraries(); scheduleUiSave();
+  }
+  function restorePins(ui) {
+    if (!ui) return;
+    state.pinnedLibraries = Array.isArray(ui.pinnedLibraries) ? ui.pinnedLibraries : [];
+    state.pinnedFoldersByLibrary = ui.pinnedFoldersByLibrary && typeof ui.pinnedFoldersByLibrary === 'object' && !Array.isArray(ui.pinnedFoldersByLibrary) ? ui.pinnedFoldersByLibrary : {};
   }
   let uiSaveTimer = 0;
   function scheduleUiSave() {
@@ -159,14 +185,20 @@
   }
   async function restoreSessionForUser() {
     const ui = await window.desktopLibrary.loadSession().catch(() => null);
+    restorePins(ui);
+    renderDesktopLibraries();
+    renderFolderTree();
     const library = ui && state.desktopLibraries.find(item => item.id === ui.libraryId && item.available);
     if (!library) return;
     if (library.id === state.desktopLibraryId) { applyUi(ui); return; }
     state.pendingUi = ui;
-    await activateDesktopLibrary(library.id).catch(() => {});
+    state.switchingAccount = true;
+    try { await activateDesktopLibrary(library.id); }
+    catch (error) { announce(`Could not restore the saved photo folder: ${error.message}`); }
+    finally { state.switchingAccount = false; }
   }
 
-  function releaseGrid() { observer?.disconnect(); for (const url of state.gridUrls) URL.revokeObjectURL(url); state.gridUrls.clear(); state.generation++; }
+  function releaseGrid() { observer?.disconnect(); thumbnailQueue.length = 0; for (const url of state.gridUrls) URL.revokeObjectURL(url); state.gridUrls.clear(); state.generation++; }
   // Video previews keep their files open; drop them so Windows can rename or move the folder.
   async function releaseOpenMedia() {
     state.generation++; observer?.disconnect();
@@ -278,18 +310,29 @@
   function renderDesktopLibraries() {
     const selector = byId('desktop-library');
     selector.replaceChildren(new Option('＋ Add photo folders…', '__add__'));
-    for (const library of state.desktopLibraries) {
-      const option = new Option(`${library.name}${library.available ? '' : ' · unavailable'}`, library.id);
+    const libraries = [...state.desktopLibraries].sort((first, second) => Number(state.pinnedLibraries.includes(second.id)) - Number(state.pinnedLibraries.includes(first.id)) || collator.compare(first.name, second.name));
+    for (const library of libraries) {
+      const option = new Option(`${state.pinnedLibraries.includes(library.id) ? 'Pinned · ' : ''}${library.name}${library.available ? '' : ' · unavailable'}`, library.id);
       option.title = library.path;
       selector.add(option);
     }
     selector.value = state.desktopLibraryId || '__add__';
+    const pin = byId('pin-library');
+    pin.hidden = !state.desktopLibraryId;
+    pin.setAttribute('aria-pressed', String(state.pinnedLibraries.includes(state.desktopLibraryId)));
+    pin.title = state.pinnedLibraries.includes(state.desktopLibraryId) ? 'Unpin this photo folder' : 'Pin this photo folder';
+    pin.setAttribute('aria-label', pin.title);
+    pin.replaceChildren(icon('Pin', '⌖'));
   }
 
   async function activateDesktopLibrary(libraryId) {
     if (state.busy) { renderDesktopLibraries(); return; }
     const library = state.desktopLibraries.find(item => item.id === libraryId);
     if (!library) return;
+    if (!state.switchingAccount && state.desktopLibraryId && state.desktopLibraryId !== library.id) {
+      setPinnedLibrary(state.desktopLibraryId, true);
+      if (state.folder) setPinnedFolder(state.folder, true, state.desktopLibraryId);
+    }
     if (state.desktopLibraryId && state.indexDirty) await persistDesktopIndexNow();
     const token = ++state.activation;
     const sameLibrary = state.desktopLibraryId === library.id;
@@ -347,6 +390,9 @@
 
   async function initializeDesktop() {
     document.body.classList.add('desktop-app');
+    window.addEventListener('still:flush-library', event => {
+      event.detail.waitUntil(state.busy ? Promise.reject(new Error('Wait for the current library scan to finish.')) : (state.indexDirty ? persistDesktopIndexNow() : desktopSaveQueue));
+    });
     // Wi-Fi sync imports photos in the background; rescan once things settle so they appear.
     let libraryChangeTimer = 0;
     window.addEventListener('still:library-changed', event => {
@@ -365,6 +411,7 @@
         const saved = await window.desktopLibrary.loadSession().catch(() => null);
         const preferred = (saved && state.desktopLibraries.find(library => library.id === saved.libraryId && library.available)) || state.desktopLibraries.find(library => library.available) || state.desktopLibraries[0];
         state.pendingUi = saved && saved.libraryId === preferred.id ? saved : null;
+        restorePins(saved);
         await activateDesktopLibrary(preferred.id);
       } else {
         announce('Add one or more photo folders. They will be remembered on this computer.');
@@ -373,14 +420,32 @@
   }
 
   function renderFolderTree() {
-    const container = byId('folder-tree'); container.replaceChildren();
+    const container = byId('folder-tree');
+    const expandedPaths = new Set([...container.querySelectorAll('.tree-expander[aria-expanded="true"]')].map(toggle => toggle.closest('.tree-node')?.dataset.folderPath).filter(Boolean));
+    container.replaceChildren();
+    renderPinnedFolders();
     function branch(node) {
-      const wrapper = make('div', 'tree-node'); const row = make('div', 'tree-row'); const toggle = make('button', 'tree-expander', node.children.length ? '▸' : '');
+      const wrapper = make('div', 'tree-node'); wrapper.dataset.folderPath = node.path; const row = make('div', 'tree-row'); const toggle = make('button', 'tree-expander', node.children.length ? '▸' : '');
       toggle.disabled = !node.children.length; toggle.setAttribute('aria-label', `Expand ${node.name}`); toggle.setAttribute('aria-expanded', 'false');
       const button = make('button', 'tree-button'); button.title = node.path || state.root;
-      button.append(make('span', '', node.path ? node.name : state.root), make('span', '', formatNumber(node.count)));
-      button.addEventListener('click', () => { state.folder = node.path; byId('folder-filter').value = node.path; state.collection = ''; setView('folders'); document.querySelectorAll('.tree-button.selected').forEach(item => item.classList.remove('selected')); button.classList.add('selected'); closeSidebar(); });
+      button.classList.toggle('selected', node.path === state.folder);
+      button.setAttribute('aria-current', node.path === state.folder ? 'true' : 'false');
+      const name = make('span', '', node.path ? node.name : state.root);
+      const pinned = node.path && state.desktopLibraryId && folderPins().includes(node.path);
+      if (pinned) { name.append(icon('Pin', '⌖')); button.classList.add('pinned'); }
+      button.append(name, make('span', '', formatNumber(node.count)));
+      if (node.path && state.desktopLibraryId) {
+        button.setAttribute('aria-haspopup', 'menu');
+        button.addEventListener('contextmenu', event => showFolderContextMenu(event, node.path));
+      }
+      button.addEventListener('click', () => openFolder(node.path));
       row.append(toggle, button);
+      if (node.path) {
+        const open = make('button', 'tree-open');
+          open.append(icon('FolderOpen', '↗')); open.title = `Open ${node.name}`; open.setAttribute('aria-label', open.title);
+          open.addEventListener('click', () => openFolder(node.path));
+          row.append(open);
+      }
       if (state.desktopLibraryId && node.path) {
         const rename = make('button', 'tree-action', '✎'); rename.title = `Rename ${node.name}`; rename.setAttribute('aria-label', `Rename ${node.name}`);
         rename.addEventListener('click', () => openFolderDialog('rename', node));
@@ -391,14 +456,86 @@
       wrapper.append(row);
       if (node.children.length) {
         const children = make('div', 'tree-children'); children.hidden = true; let built = false;
-        toggle.addEventListener('click', () => { if (!built) { node.children.sort((first, second) => collator.compare(first.name, second.name)).forEach(child => children.append(branch(child))); built = true; } children.hidden = !children.hidden; toggle.textContent = children.hidden ? '▸' : '▾'; toggle.setAttribute('aria-expanded', String(!children.hidden)); });
+        const expand = () => { if (!built) { node.children.sort((first, second) => Number(folderPins().includes(second.path)) - Number(folderPins().includes(first.path)) || collator.compare(first.name, second.name)).forEach(child => children.append(branch(child))); built = true; } children.hidden = false; toggle.textContent = '▾'; toggle.setAttribute('aria-expanded', 'true'); };
+        toggle.addEventListener('click', () => { if (children.hidden) expand(); else { children.hidden = true; toggle.textContent = '▸'; toggle.setAttribute('aria-expanded', 'false'); } });
         wrapper.append(children);
-        if (!node.path) toggle.click();
+        if (!node.path || expandedPaths.has(node.path)) expand();
       }
       return wrapper;
     }
     container.append(branch(state.folders.get('')));
   }
+
+  function openFolder(path) {
+    state.folder = path;
+    byId('folder-filter').value = path;
+    state.collection = '';
+    setView('folders');
+    renderFolderTree();
+    closeSidebar();
+  }
+
+  function renderPinnedFolders() {
+    const section = byId('pinned-section');
+    const container = byId('pinned-folders');
+    container.replaceChildren();
+    const pinned = folderPins().filter(path => state.folders.has(path)).sort((first, second) => collator.compare(first, second));
+    section.hidden = !state.desktopLibraryId || pinned.length === 0;
+    for (const path of pinned) {
+      const node = state.folders.get(path);
+      const row = make('div', 'pinned-folder-row');
+      const button = make('button', 'tree-button pinned-folder-button');
+      button.title = path;
+      button.classList.toggle('selected', path === state.folder);
+      button.setAttribute('aria-current', path === state.folder ? 'true' : 'false');
+      button.setAttribute('aria-haspopup', 'menu');
+      button.append(icon('Folder', '▱'), make('span', '', path), make('span', '', formatNumber(node.count)));
+      button.addEventListener('click', () => openFolder(path));
+      button.addEventListener('contextmenu', event => showFolderContextMenu(event, path));
+      const unpin = make('button', 'pinned-folder-unpin');
+      unpin.append(icon('PinOff', '×'));
+      unpin.title = `Unpin ${node.name}`;
+      unpin.setAttribute('aria-label', unpin.title);
+      unpin.addEventListener('click', () => setPinnedFolder(path, false));
+      row.append(button, unpin);
+      container.append(row);
+    }
+  }
+
+  function showFolderContextMenu(event, path) {
+    event.preventDefault();
+    event.stopPropagation();
+    contextFolderPath = path;
+    const menu = byId('folder-context-menu');
+    const action = byId('folder-context-pin');
+    const pinned = folderPins().includes(path);
+    action.replaceChildren(icon(pinned ? 'PinOff' : 'Pin', pinned ? '×' : '⌖'), document.createTextNode(pinned ? 'Unpin from sidebar' : 'Pin to sidebar'));
+    menu.hidden = false;
+    const left = Math.min(event.clientX, window.innerWidth - menu.offsetWidth - 8);
+    const top = Math.min(event.clientY, window.innerHeight - menu.offsetHeight - 8);
+    menu.style.left = `${Math.max(8, left)}px`;
+    menu.style.top = `${Math.max(8, top)}px`;
+    action.focus();
+  }
+
+  function closeFolderContextMenu() {
+    byId('folder-context-menu').hidden = true;
+    contextFolderPath = '';
+  }
+  byId('folder-context-pin').addEventListener('click', () => {
+    const path = contextFolderPath;
+    if (!path) return;
+    closeFolderContextMenu();
+    setPinnedFolder(path, !folderPins().includes(path));
+  });
+  document.addEventListener('pointerdown', event => {
+    if (!byId('folder-context-menu').contains(event.target)) closeFolderContextMenu();
+  });
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && !byId('folder-context-menu').hidden) closeFolderContextMenu();
+  });
+  window.addEventListener('resize', closeFolderContextMenu);
+  window.addEventListener('scroll', closeFolderContextMenu, true);
 
   function openFolderDialog(mode, node) {
     if (!canEdit()) { denyEdit(); return; }
@@ -432,6 +569,7 @@
         if (state.indexDirty) await persistDesktopIndexNow();
         await releaseOpenMedia();
         await window.desktopLibrary.moveFolder(state.desktopLibraryId, node.path, to);
+        relocateFolderPins(node.path, to);
         close();
         state.folder = '';
         await activateDesktopLibrary(state.desktopLibraryId);
@@ -542,7 +680,15 @@
     byId('pagination').hidden = !state.filtered.length;
     byId('page-label').textContent = `Page ${state.page + 1} of ${Math.max(1, Math.ceil(state.filtered.length / pageSize))}`;
     byId('previous-page').disabled = state.page === 0; byId('next-page').disabled = (state.page + 1) * pageSize >= state.filtered.length;
-    observer = new IntersectionObserver(entries => { for (const entry of entries) if (entry.isIntersecting) { observer.unobserve(entry.target); enqueueThumbnail(entry.target, generation); } }, { rootMargin: '180px' });
+    observer = new IntersectionObserver(entries => {
+      for (const entry of entries) {
+        if (entry.isIntersecting) enqueueThumbnail(entry.target, generation);
+        else {
+          const index = thumbnailQueue.findIndex(task => task.button === entry.target);
+          if (index >= 0) thumbnailQueue.splice(index, 1);
+        }
+      }
+    }, { rootMargin: '180px' });
     const pagePhotos = state.filtered.slice(state.page * pageSize, (state.page + 1) * pageSize);
     if (state.view === 'timeline') { byId('pagination').hidden = true; renderRoadmap(gallery, state.filtered); return; }
     const groups = new Map();
@@ -589,7 +735,7 @@
         const name = month < 0 ? 'No filename date' : new Intl.DateTimeFormat(undefined, { month: 'long', timeZone: 'UTC' }).format(new Date(Date.UTC(2000, month, 1)));
         const header = make('button', 'month-header'); header.append(make('strong', '', name), make('small', '', `${formatNumber(list.length)} item${list.length === 1 ? '' : 's'}`));
         const grid = make('div', 'photo-grid month-strip'); let expanded = false;
-        const fill = () => { grid.replaceChildren(); for (const photo of expanded ? list : list.slice(0, previewCount)) grid.append(createCard(photo)); };
+        const fill = () => { grid.querySelectorAll('.photo-open').forEach(button => observer.unobserve(button)); grid.replaceChildren(); for (const photo of expanded ? list : list.slice(0, previewCount)) grid.append(createCard(photo)); };
         header.setAttribute('aria-expanded', 'false'); header.addEventListener('click', () => { expanded = !expanded; header.setAttribute('aria-expanded', String(expanded)); item.classList.toggle('expanded', expanded); fill(); });
         fill(); item.append(header, grid);
         if (list.length > previewCount) { const more = make('button', 'month-more', `+${list.length - previewCount} more`); more.addEventListener('click', () => header.click()); more.hidden = false; item.append(more); }
@@ -601,11 +747,12 @@
   }
 
   const thumbnailQueue = []; let thumbnailWorkers = 0;
-  function enqueueThumbnail(button, generation) { thumbnailQueue.push({ button, generation }); pumpThumbnails(); }
+  function enqueueThumbnail(button, generation) { if (!thumbnailQueue.some(task => task.button === button)) thumbnailQueue.push({ button, generation }); pumpThumbnails(); }
   function pumpThumbnails() {
     while (thumbnailWorkers < 3 && thumbnailQueue.length) {
-      const task = thumbnailQueue.shift(); if (task.generation !== state.generation) continue;
-      thumbnailWorkers++; loadThumbnail(task.button, task.generation).finally(() => { thumbnailWorkers--; pumpThumbnails(); });
+      const task = thumbnailQueue.shift(); if (task.generation !== state.generation || !task.button.isConnected) continue;
+      observer.unobserve(task.button);
+      thumbnailWorkers++; loadThumbnail(task.button, task.generation).finally(() => { thumbnailWorkers--; setTimeout(pumpThumbnails, 0); });
     }
   }
   async function getFile(photo) {
@@ -615,6 +762,13 @@
       return new File([bytes], photo.name, { type: mime, lastModified: photo.modified || Date.now() });
     }
     const file = photo.source instanceof File ? photo.source : await photo.source.getFile(); photo.modified = file.lastModified || null; photo.size = file.size; return file;
+  }
+  async function getPreviewFile(photo) {
+    if (window.desktopLibrary && ['heic', 'heif'].includes(photo.type)) {
+      const bytes = await window.desktopLibrary.readPhotoPreview(state.desktopLibraryId, photo.path);
+      return new Blob([bytes], { type: 'image/jpeg' });
+    }
+    return getFile(photo);
   }
   async function hydrateModifiedDates() {
     const pass = ++state.metadataPass; const pending = state.photos.filter(photo => photo.modified === null); let completed = 0;
@@ -652,36 +806,53 @@
       photo.dimensions = { width: video.videoWidth, height: video.videoHeight }; photo.duration = video.duration;
       button.replaceChildren(video);
       const badge = button.parentElement?.querySelector('.video-badge'); if (badge && Number.isFinite(video.duration)) badge.textContent = `▶ ${formatDuration(video.duration)}`;
-    } catch { if (generation === state.generation) button.replaceChildren(make('span', 'photo-placeholder', `${photo.type.toUpperCase()} · Preview unavailable`)); }
+    } catch { if (generation === state.generation) showUnavailablePreview(button); }
   }
   // Decoded previews survive grid rebuilds (closing the viewer, paging, filtering) so they are not re-read from disk.
   const thumbCacheLimit = 600;
-  const thumbKey = photo => `|||`;
+  const thumbKey = photo => JSON.stringify([state.sessionKey, state.desktopLibraryId, state.root, photo.id, photo.path, photo.modified, photo.size]);
   function rememberThumbnail(photo, url) {
     const key = thumbKey(photo);
     state.thumbCache.delete(key); state.thumbCache.set(key, { url, dimensions: photo.dimensions });
     while (state.thumbCache.size > thumbCacheLimit) { const [oldest, entry] = state.thumbCache.entries().next().value; state.thumbCache.delete(oldest); URL.revokeObjectURL(entry.url); }
   }
+  function showUnavailablePreview(button) {
+    button.replaceChildren(make('span', 'photo-placeholder', `${button.photo.type.toUpperCase()} · No preview available`));
+  }
   function showThumbnail(button, photo, url) {
-    const preview = make('img'); preview.alt = photo.name; preview.decoding = 'async'; preview.src = url; button.replaceChildren(preview);
+    const preview = make('img'); preview.alt = photo.name; preview.decoding = 'async';
+    preview.addEventListener('error', () => {
+      const key = thumbKey(photo);
+      if (state.thumbCache.get(key)?.url === url) { state.thumbCache.delete(key); URL.revokeObjectURL(url); }
+      if (preview.parentElement === button) showUnavailablePreview(button);
+    }, { once: true });
+    preview.src = url; button.replaceChildren(preview);
   }
   async function loadThumbnail(button, generation) {
     if (isDocument(button.photo)) { button.replaceChildren(make('span', 'doc-tile', button.photo.type.toUpperCase())); return; }
     if (isVideo(button.photo)) return loadVideoThumbnail(button, generation);
     const cached = state.thumbCache.get(thumbKey(button.photo));
     if (cached) { state.thumbCache.delete(thumbKey(button.photo)); state.thumbCache.set(thumbKey(button.photo), cached); if (cached.dimensions) button.photo.dimensions = cached.dimensions; showThumbnail(button, button.photo, cached.url); return; }
-    let original; let thumbnail;
+    let original; let thumbnail; let bitmap; let resized;
     try {
-      const photo = button.photo; const file = await getFile(photo); if (generation !== state.generation) return;
-      original = URL.createObjectURL(file); const image = await decodeImage(original); if (generation !== state.generation) return;
-      photo.dimensions = { width: image.naturalWidth, height: image.naturalHeight };
-      const scale = Math.min(1, 480 / Math.max(image.naturalWidth, image.naturalHeight));
-      const canvas = document.createElement('canvas'); canvas.width = Math.max(1, Math.round(image.naturalWidth * scale)); canvas.height = Math.max(1, Math.round(image.naturalHeight * scale)); canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height);
-      const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.8)); if (!blob || generation !== state.generation) return;
+      const photo = button.photo; const file = await getPreviewFile(photo); if (generation !== state.generation) return;
+      let image;
+      if (typeof createImageBitmap === 'function') { bitmap = await createImageBitmap(file); image = bitmap; }
+      else { original = URL.createObjectURL(file); image = await decodeImage(original); }
+      if (generation !== state.generation) return;
+      const width = bitmap ? bitmap.width : image.naturalWidth; const height = bitmap ? bitmap.height : image.naturalHeight;
+      photo.dimensions = { width, height };
+      const scale = Math.min(1, 480 / Math.max(width, height));
+      const canvas = document.createElement('canvas'); canvas.width = Math.max(1, Math.round(width * scale)); canvas.height = Math.max(1, Math.round(height * scale));
+      if (bitmap && scale < 1) { resized = await createImageBitmap(bitmap, { resizeWidth: canvas.width, resizeHeight: canvas.height }); image = resized; }
+      if (generation !== state.generation) return;
+      canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height);
+      const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.8)); if (generation !== state.generation) return;
+      if (!blob) throw new Error('Thumbnail could not be generated');
       thumbnail = URL.createObjectURL(blob); rememberThumbnail(photo, thumbnail);
       showThumbnail(button, photo, thumbnail);
-    } catch { if (generation === state.generation) button.replaceChildren(make('span', 'photo-placeholder', `${button.photo.type.toUpperCase()} · Preview unavailable`)); }
-    finally { if (original) URL.revokeObjectURL(original); }
+    } catch { if (generation === state.generation) showUnavailablePreview(button); }
+    finally { resized?.close(); bitmap?.close(); if (original) URL.revokeObjectURL(original); }
   }
 
   function toggleFavorite(photo) { if (!canEdit()) { denyEdit(); return; } const entry = state.indexById.get(photo.id); if (!entry) return; entry.metadata.favorite = !entry.metadata.favorite; markIndexChanged(); }
@@ -816,9 +987,9 @@
     if (isDocument(photo)) { await showViewerDocument(photo, token); return; }
     let file;
     try {
-      file = await getFile(photo);
-    } catch {
-      if (token === state.viewerToken) { byId('viewer-state').textContent = 'This file is no longer readable. Reconnect the folder and grant access again; the index entry is preserved.'; updateDetails(photo); }
+      file = await getPreviewFile(photo);
+    } catch (error) {
+      if (token === state.viewerToken) { byId('viewer-state').textContent = `No preview available. ${error.message} The original file is unchanged.`; updateDetails(photo); }
       return;
     }
     if (token !== state.viewerToken) return;
@@ -830,8 +1001,10 @@
     } catch {
       if (token === state.viewerToken && !['heic', 'heif'].includes(photo.type) && state.viewerList.length > 1) { brokenViewerIds.add(photo.id); skipBrokenPhoto(); return; }
       if (token === state.viewerToken) {
-        byId('viewer-state').textContent = ['heic', 'heif'].includes(photo.type)
-          ? 'HEIC/HEIF preview is unavailable in this browser. The photo is indexed, but its pixels cannot be decoded here. Try a HEIC-capable viewer or add a separate JPEG copy; the original stays unchanged.'
+        byId('viewer-state').textContent = ['heic', 'heif'].includes(photo.type) && window.desktopLibrary
+          ? 'HEIC/HEIF preview conversion failed. The original is unchanged; check that the photo is readable and try again.'
+          : ['heic', 'heif'].includes(photo.type)
+            ? 'HEIC/HEIF preview is unavailable in this browser. The photo is indexed, but its pixels cannot be decoded here. Open it in the desktop app or add a separate JPEG copy; the original stays unchanged.'
           : 'This image could not be decoded. It may be corrupt or unsupported; other photos remain available.';
         updateDetails(photo);
       }
@@ -880,7 +1053,7 @@
     try {
       const PhotoSwipe = await Promise.race([loadPhotoSwipe(), new Promise((resolve, reject) => setTimeout(() => reject(new Error('Viewer offline')), 8000))]);
       if (token !== state.viewerToken || !byId('viewer').open) return;
-      photoSwipe = new PhotoSwipe({ appendToEl: byId('image-stage'), getViewportSizeFn: () => ({ x: byId('image-stage').clientWidth, y: byId('image-stage').clientHeight }), dataSource: state.viewerList, index: state.viewerIndex, loop: false, preload: [0, 0], showHideAnimationType: 'none', bgOpacity: 1, trapFocus: false, returnFocus: false, escKey: false });
+      photoSwipe = new PhotoSwipe({ appendToEl: byId('image-stage'), getViewportSizeFn: () => ({ x: byId('image-stage').clientWidth, y: byId('image-stage').clientHeight }), dataSource: state.viewerList, index: state.viewerIndex, loop: false, preload: [0, 0], maxZoomLevel: levels => Math.max(1, levels.fit * 8), showHideAnimationType: 'none', bgOpacity: 1, trapFocus: false, returnFocus: false, escKey: false });
       const instance = photoSwipe;
       photoSwipe.addFilter('itemData', (data, index) => {
         const photo = state.viewerList[index]; const dimensions = photo.dimensions || { width: 1600, height: 1200 };
@@ -893,7 +1066,7 @@
         (async () => {
           try {
             let url = state.viewerUrls.get(photo.id);
-            if (!url) { const file = await getFile(photo); if (!photoSwipe) return; url = URL.createObjectURL(file); state.viewerUrls.set(photo.id, url); }
+            if (!url) { const file = await getPreviewFile(photo); if (!photoSwipe) return; url = URL.createObjectURL(file); state.viewerUrls.set(photo.id, url); }
             const decoded = await decodeImage(url); if (!photoSwipe) return;
             photo.dimensions = { width: decoded.naturalWidth, height: decoded.naturalHeight }; content.data.width = decoded.naturalWidth; content.data.height = decoded.naturalHeight; content.width = decoded.naturalWidth; content.height = decoded.naturalHeight; element.src = url; content.onLoaded();
             if (photoSwipe.currIndex === content.data.index) { updateDetails(photo); photoSwipe.currSlide?.updateContentSize(true); photoSwipe.currSlide?.zoomAndPanToInitial(); }
@@ -922,7 +1095,8 @@
   byId('navigation').addEventListener('click', event => { const button = event.target.closest('[data-view]'); if (button) setView(button.dataset.view); });
   byId('grid-mode').addEventListener('click', () => setView('photos')); byId('timeline-mode').addEventListener('click', () => setView('timeline'));
   let searchTimer; byId('search').addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(applyFilters, 180); });
-  for (const id of ['folder-filter', 'type-filter']) byId(id).addEventListener('change', applyFilters);
+  byId('folder-filter').addEventListener('change', () => { applyFilters(); renderFolderTree(); });
+  byId('type-filter').addEventListener('change', applyFilters);
   byId('sort').addEventListener('change', () => { state.metadataPass++; applyFilters(); savePreferences(); if (byId('sort').value === 'modified') hydrateModifiedDates(); });
   byId('reset').addEventListener('click', () => { byId('search').value = ''; byId('folder-filter').value = ''; state.kind = kindForView(state.view); populateFormats(); updateKindCounts(); byId('type-filter').value = ''; byId('sort').value = 'name'; state.collection = ''; renderCollections(); applyFilters(); });
   byId('kind-tabs').addEventListener('click', event => { const button = event.target.closest('[data-kind]'); if (button) setKind(button.dataset.kind); });
@@ -958,10 +1132,16 @@
   byId('image-stage').addEventListener('wheel', event => {
     if (byId('large-image').hidden || byId('large-video') || byId('large-document')) return;
     event.preventDefault(); event.stopPropagation();
-    const factor = event.deltaY < 0 ? 1.15 : 1 / 1.15;
+    if (!event.deltaY) return;
+    // Scale by the wheel distance so notched mice and smooth touchpads both zoom at a natural pace.
+    const pixels = event.deltaY * (event.deltaMode === 1 ? 40 : event.deltaMode === 2 ? 800 : 1);
+    const factor = 2 ** Math.max(-0.5, Math.min(0.5, -pixels / 500));
     if (photoSwipe?.currSlide) {
       const slide = photoSwipe.currSlide; const rect = byId('image-stage').getBoundingClientRect();
-      slide.zoomTo(Math.min(slide.zoomLevels.max * 4, Math.max(slide.zoomLevels.min, slide.currZoomLevel * factor)), { x: event.clientX - rect.left, y: event.clientY - rect.top }, 0);
+      const fit = slide.zoomLevels.initial;
+      const level = Math.min(slide.zoomLevels.max, Math.max(fit, slide.currZoomLevel * factor));
+      if (level <= fit * 1.001) { if (slide.currZoomLevel !== fit) slide.zoomTo(fit, undefined, 0); return; }
+      slide.zoomTo(level, { x: event.clientX - rect.left, y: event.clientY - rect.top }, 0);
     } else { state.zoom = Math.min(8, Math.max(1, state.zoom * factor)); if (state.zoom === 1) { state.panX = 0; state.panY = 0; } updateTransform(); }
   }, { passive: false, capture: true });
   byId('zoom-in').addEventListener('click', () => { if (photoSwipe) photoSwipe.currSlide?.zoomTo(Math.min(8, (photoSwipe.currSlide.currZoomLevel || 1) * 1.5)); else { state.zoom = Math.min(8, state.zoom * 1.5); updateTransform(); } });
@@ -977,6 +1157,7 @@
     if (event.target.value === '__add__') { await chooseFolder(); return; }
     try { await activateDesktopLibrary(event.target.value); } catch (error) { announce(`Could not open saved photo folder: ${error.message}`); }
   });
+  byId('pin-library').addEventListener('click', () => setPinnedLibrary(state.desktopLibraryId, !state.pinnedLibraries.includes(state.desktopLibraryId)));
   byId('toggle-fullscreen').addEventListener('click', async () => {
     if (!window.desktopLibrary) return;
     try { await window.desktopLibrary.toggleFullscreen(); } catch (error) { announce(`Could not toggle fullscreen: ${error.message}`); }

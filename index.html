@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self' blob: data:; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; media-src 'self' blob: still-media:; frame-src 'self' blob: still-media:; font-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
-  <title>Still / Photo Library</title>
+  <title>MiLeo Photo Library</title>
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="auth.css">
   <link rel="stylesheet" href="chat.css">
@@ -15,17 +15,19 @@
   <link rel="stylesheet" href="video.css">
   <link rel="stylesheet" href="timeline.css">
   <script defer src="lucide.min.js"></script>
+  <script defer src="branding.js"></script>
   <script defer src="index-store.js"></script>
   <script defer src="auth-ui.js"></script>
   <script defer src="chat-ui.js"></script>
   <script defer src="wifi-sync-ui.js"></script>
+  <script defer src="install-phone.js"></script>
   <script defer src="admin-ui.js"></script>
   <script defer src="admin.js"></script>
   <script defer src="app.js"></script>
 </head>
 <body>
   <aside class="sidebar" id="sidebar">
-    <a class="brand" href="index.html"><span class="brand-mark">S</span>still<span class="brand-dot">.</span></a>
+    <a class="brand" href="index.html" aria-label="MiLeo Photo Library home"><span class="brand-mark" aria-hidden="true">M</span><span class="brand-name" data-brand="shortName">MiLeo</span></a>
     <div class="eyebrow">YOUR LIBRARY</div>
     <nav id="navigation" aria-label="Library">
       <button data-view="photos" class="active"><span aria-hidden="true">▦</span>Photos</button>
@@ -38,14 +40,19 @@
       <button data-view="favorites"><span aria-hidden="true">♡</span>Favorites</button>
       <button data-view="recent"><span aria-hidden="true">↻</span>Recently Added</button>
     </nav>
+    <div class="sidebar-section pinned-section" id="pinned-section" hidden><div class="eyebrow">PINNED FOLDERS</div><div id="pinned-folders"></div></div>
     <div class="sidebar-section"><div class="eyebrow">FOLDERS</div><div id="folder-tree"><p class="muted">No folder connected</p></div></div>
-    <footer class="sidebar-footer"><span class="privacy-dot"></span> Local library<div id="library-summary">Not connected</div></footer>
+    <footer class="sidebar-footer"><span class="privacy-dot"></span> Local library<div id="library-summary">Not connected</div><div class="brand-footer"><span data-brand="appName">MiLeo Photo Library</span><a data-brand-website target="_blank" rel="noopener noreferrer" hidden>Website ↗</a></div></footer>
   </aside>
+  <div id="folder-context-menu" class="folder-context-menu" role="menu" hidden>
+    <button id="folder-context-pin" type="button" role="menuitem"></button>
+  </div>
   <main>
     <header class="topbar">
       <button id="menu-toggle" class="icon-button mobile-only" title="Toggle sidebar" aria-label="Toggle sidebar" aria-expanded="false">☰</button>
       <label class="search"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Search your library" aria-label="Search filenames, folders, paths, and tags"></label>
       <select id="desktop-library" aria-label="Registered photo folders" hidden></select>
+      <button id="pin-library" class="icon-button" title="Pin this photo folder" aria-label="Pin this photo folder" aria-pressed="false" hidden></button>
       <div class="index-actions" aria-label="Photo index tools">
         <button id="export-index" class="icon-button" title="Export JSON index" aria-label="Export JSON index">⇩</button>
         <button id="import-index" class="icon-button" title="Import JSON index" aria-label="Import JSON index">⇧</button>
@@ -53,6 +60,7 @@
         <input id="index-input" type="file" accept="application/json,.json" hidden>
       </div>
       <button id="choose-folder" class="primary">＋ <span>Open folder</span></button>
+      <button id="install-phone" type="button" class="install-phone-button"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="6" y="2" width="12" height="20" rx="2"></rect><path d="M10 18h4"></path></svg><span>Install on Phone</span></button>
       <button id="input-folder" class="icon-button" title="Choose folder using file input" aria-label="Choose folder using file input">▱</button>
       <input id="folder-input" type="file" webkitdirectory directory multiple hidden>
     </header>
@@ -70,11 +78,31 @@
       <progress id="index-progress" hidden aria-label="Indexing photos"></progress>
       <div class="index-status-row"><span id="index-summary">No index loaded</span><button id="review-missing" class="quiet" hidden></button></div>
       <section id="collections" class="collections" aria-label="Collections" hidden></section>
-      <section id="empty-state" class="empty-state"><div class="empty-art" aria-hidden="true"><span>▧</span><span>▧</span><span>▧</span></div><h2>A little space for your memories.</h2><p id="empty-message">No folder connected</p><button id="empty-open" class="primary">＋ Open photo folder</button></section>
+      <section id="empty-state" class="empty-state"><div class="empty-art" aria-hidden="true"><span>▧</span><span>▧</span><span>▧</span></div><div class="eyebrow brand-welcome" data-brand="appName">MiLeo Photo Library</div><h2 data-brand="tagline">Your memories. Your library. Your world.</h2><p id="empty-message">No folder connected</p><button id="empty-open" class="primary">＋ Open photo folder</button></section>
       <section id="gallery" aria-label="Photos"></section>
       <div class="pagination" id="pagination" hidden><button id="previous-page" class="icon-button" title="Previous page" aria-label="Previous page">←</button><span id="page-label"></span><button id="next-page" class="icon-button" title="Next page" aria-label="Next page">→</button></div>
     </section>
   </main>
+  <dialog id="phone-install-dialog" aria-labelledby="phone-install-title">
+    <div class="wifi-head"><h2 id="phone-install-title">Install on Phone</h2><button id="phone-install-close" type="button" class="wifi-close" aria-label="Close installation dialog">×</button></div>
+    <p>Open <strong data-brand="syncName">MiLeo Sync</strong>, the mobile companion, on Android or iPhone. Keep your phone and Desktop on the <strong>same Wi-Fi network</strong>, and keep the Desktop app running for library access and local photo synchronization.</p>
+    <p id="phone-install-status" role="status" aria-live="polite">Checking connection...</p>
+    <p id="phone-install-error" class="wifi-error" role="alert" hidden></p>
+    <button id="phone-install-connect" type="button" class="wifi-primary">Start and show QR code</button>
+    <div id="phone-install-link" hidden>
+      <img id="phone-install-qr" class="wifi-qr" alt="Scan to open and pair MiLeo Sync on your phone" hidden>
+      <p id="phone-install-code" class="wifi-code"></p>
+      <p id="phone-install-expiry" class="wifi-hint" role="status"></p>
+      <label class="wifi-field">Phone URL<input id="phone-install-url" type="text" readonly></label>
+      <button id="phone-install-copy" type="button" class="quiet">Copy URL</button>
+      <p class="wifi-hint">Scan with your phone camera, or copy this URL. Pairing codes are single-use and expire when the countdown ends. Already paired phones can open the URL without a new code.</p>
+      <p class="wifi-hint">The local HTTPS certificate is self-signed. Compare the certificate fingerprint with the one below before trusting it. A browser warning bypass alone may not allow PWA installation or offline support; your phone must trust the certificate. Otherwise, use the mobile site in the browser.</p>
+      <code id="phone-install-fingerprint" class="wifi-fingerprint"></code>
+    </div>
+    <section class="wifi-section"><h3>Android</h3><p>Open the URL in Chrome, then choose <strong>Install app</strong> or <strong>Add to Home screen</strong> from its menu. An Install button appears on the phone when the browser supports it.</p></section>
+    <section class="wifi-section"><h3>iPhone / iPad</h3><p>Open the URL in Safari, tap <strong>Share</strong>, then <strong>Add to Home Screen</strong>. If offered, enable <strong>Open as Web App</strong>, then tap Add.</p></section>
+    <p class="wifi-hint">This installs the existing mobile web companion, not an App Store or APK download. The app shell can work offline when supported, but viewing photos, pairing, sign-in and sync require a connection to this Desktop. iPhone supports browsing and manual uploads; phone-folder linking requires a compatible Android browser.</p>
+  </dialog>
   <dialog id="viewer" aria-label="Photo viewer">
     <div class="viewer-toolbar"><span id="viewer-position"></span><span id="viewer-engine"></span><button id="favorite" class="icon-button" title="Toggle favorite" aria-label="Toggle favorite">♡</button><button id="toggle-details" class="icon-button" title="Hide details" aria-label="Hide details" aria-pressed="true">ⓘ</button><button id="zoom-out" class="icon-button" title="Zoom out" aria-label="Zoom out">−</button><button id="zoom-in" class="icon-button" title="Zoom in" aria-label="Zoom in">＋</button><button id="toggle-fullscreen" class="icon-button" title="Toggle fullscreen" aria-label="Toggle fullscreen">⛶</button><button id="viewer-close" class="icon-button" title="Close viewer" aria-label="Close viewer">×</button></div>
     <div class="viewer-body"><div class="image-stage" id="image-stage"><button id="viewer-prev" class="viewer-arrow previous" aria-label="Previous photo" title="Previous photo">‹</button><div id="pan-area"><img id="large-image" alt="" draggable="false"></div><p id="viewer-state" role="status"></p><button id="viewer-next" class="viewer-arrow next" aria-label="Next photo" title="Next photo">›</button></div>

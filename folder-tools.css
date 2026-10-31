@@ -2,6 +2,25 @@
 .tree-action{flex:none;width:24px;height:24px;border:0;border-radius:6px;background:none;color:var(--muted);cursor:pointer;opacity:0}
 .tree-row:hover .tree-action,.tree-row:focus-within .tree-action{opacity:1}
 .tree-action:hover,.tree-action:focus-visible{background:var(--tint);color:var(--ink)}
+.tree-button.pinned{color:var(--accent)}
+.tree-button .lucide{width:12px;height:12px;margin-left:4px;vertical-align:-2px}
+.tree-open{flex:none;width:24px;height:24px;border:0;border-radius:6px;background:none;color:var(--muted);cursor:pointer;opacity:.7}
+.tree-row:hover .tree-open,.tree-row:focus-within .tree-open{opacity:1}
+.tree-open:hover,.tree-open:focus-visible{background:var(--tint);color:var(--ink)}
+.tree-open svg{width:14px;height:14px}
+.pinned-section{margin-top:16px}
+.pinned-folder-row{display:flex;align-items:center;gap:2px}
+.pinned-folder-button{gap:7px}
+.pinned-folder-button>svg{width:15px;height:15px;flex:none;color:var(--accent)}
+.pinned-folder-button span:nth-of-type(1){flex:1}
+.pinned-folder-unpin{flex:none;width:24px;height:24px;border:0;border-radius:6px;background:none;color:var(--muted);opacity:.7}
+.pinned-folder-unpin:hover,.pinned-folder-unpin:focus-visible{background:var(--tint);color:var(--accent);opacity:1}
+.pinned-folder-unpin svg{width:14px;height:14px}
+.folder-context-menu{position:fixed;z-index:200;min-width:190px;padding:4px;border:1px solid var(--line);border-radius:8px;background:var(--surface);box-shadow:0 6px 24px #17201830}
+.folder-context-menu[hidden],.pinned-section[hidden]{display:none}
+.folder-context-menu button{display:flex;align-items:center;gap:9px;width:100%;padding:9px 11px;border:0;border-radius:5px;background:none;color:var(--ink);text-align:left;font-size:12px}
+.folder-context-menu button:hover,.folder-context-menu button:focus-visible{background:var(--tint)}
+.folder-context-menu svg{width:15px;height:15px;color:var(--accent)}
 .folder-dialog-backdrop{position:fixed;inset:0;z-index:110;display:grid;place-items:center;background:#24292359}
 .folder-dialog{display:grid;gap:12px;width:min(400px,92vw);padding:24px;border-radius:14px;background:var(--surface);box-shadow:0 20px 60px #0004}
 .folder-dialog h3{margin:0;font-size:18px}

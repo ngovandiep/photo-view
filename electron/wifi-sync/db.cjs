@@ -99,6 +99,35 @@ const MIGRATIONS = [
   );
   CREATE INDEX idx_activity_ts ON activity_log(ts DESC);
   CREATE INDEX idx_activity_device ON activity_log(device_id);
+  `,
+  `
+  ALTER TABLE assets ADD COLUMN expected_sha256 TEXT;
+  ALTER TABLE assets ADD COLUMN duplicate_library_path TEXT;
+  `,
+  `
+  CREATE TABLE family_profiles (
+    id TEXT PRIMARY KEY,
+    account_id INTEGER NOT NULL UNIQUE,
+    email TEXT NOT NULL,
+    name TEXT NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('viewer', 'contributor')),
+    enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1))
+  );
+  ALTER TABLE devices ADD COLUMN profile_id TEXT REFERENCES family_profiles(id);
+  ALTER TABLE devices ADD COLUMN upload_enabled INTEGER NOT NULL DEFAULT 1;
+  ALTER TABLE devices ADD COLUMN allow_images INTEGER NOT NULL DEFAULT 1;
+  ALTER TABLE devices ADD COLUMN allow_videos INTEGER NOT NULL DEFAULT 1;
+  ALTER TABLE devices ADD COLUMN max_file_size_mb INTEGER NOT NULL DEFAULT 4096;
+  CREATE TABLE album_grants (
+    profile_id TEXT NOT NULL REFERENCES family_profiles(id),
+    library_id TEXT NOT NULL,
+    album_id TEXT NOT NULL,
+    PRIMARY KEY (profile_id, library_id, album_id)
+  );
+  CREATE TABLE family_logins (
+    device_id TEXT PRIMARY KEY REFERENCES devices(id),
+    profile_id TEXT NOT NULL REFERENCES family_profiles(id)
+  );
   `
 ];
 
@@ -107,6 +136,17 @@ function openSyncDb(file) {
   const db = new DatabaseSync(file);
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
   const current = db.prepare('PRAGMA user_version').get().user_version;
+  if (current > MIGRATIONS.length) { db.close(); throw new Error('Sync database requires a newer version of MiLeo.'); }
+  if (current === 4 && file !== ':memory:') {
+    const snapshot = `${file}.pre-family-${require('node:crypto').randomUUID()}.db`;
+    try {
+      db.prepare('VACUUM INTO ?').run(snapshot);
+      const backup = new DatabaseSync(snapshot, { readOnly: true });
+      try {
+        if (backup.prepare('PRAGMA integrity_check').get().integrity_check !== 'ok' || backup.prepare('PRAGMA foreign_key_check').all().length) throw new Error('Pre-family sync snapshot verification failed.');
+      } finally { backup.close(); }
+    } catch (error) { db.close(); throw error; }
+  }
   for (let version = current; version < MIGRATIONS.length; version += 1) {
     db.exec('BEGIN');
     try {

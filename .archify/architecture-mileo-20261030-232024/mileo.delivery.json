@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "231b1330-a251-47cc-b443-1c65a323cf8b",
+  "status": "current",
+  "command": "deliver",
+  "type": "architecture",
+  "input": "D:\\photo-library\\.archify\\architecture-mileo-20261030-232024\\candidate.json",
+  "output": "D:\\photo-library\\.archify\\architecture-mileo-20261030-232024\\mileo.html",
+  "specification": {
+    "sha256": "7566c0d5a8fc8b175dca4719c12382e9425e47cfe96020d9f79b60b92cd8d575",
+    "bytes": 9617
+  },
+  "artifact": {
+    "sha256": "5d9db9073ca06150c14a4163111bd33a5559ea95be438818bd71f6997b42c0b7",
+    "bytes": 858140
+  }
+}

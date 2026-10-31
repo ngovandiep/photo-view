@@ -6,6 +6,7 @@ const https = require('node:https');
 const path = require('node:path');
 const security = require('./security.cjs');
 const { ImportError } = require('./importer.cjs');
+const { DEFAULTS: BRAND_DEFAULTS } = require('../branding.cjs');
 
 const WEB_FILES = {
   '/': ['app.html', 'text/html; charset=utf-8'],
@@ -20,7 +21,14 @@ const WEB_FILES = {
   '/app.css': ['app.css', 'text/css; charset=utf-8'],
   '/chat.js': ['chat.js', 'text/javascript; charset=utf-8'],
   '/chat.css': ['chat.css', 'text/css; charset=utf-8'],
-  '/manifest.webmanifest': ['manifest.webmanifest', 'application/manifest+json']
+  '/manifest.webmanifest': ['manifest.webmanifest', 'application/manifest+json'],
+  '/install.js': ['install.js', 'text/javascript; charset=utf-8'],
+  '/install.css': ['install.css', 'text/css; charset=utf-8'],
+  '/brand.js': ['brand.js', 'text/javascript; charset=utf-8'],
+  '/sw.js': ['sw.js', 'text/javascript; charset=utf-8'],
+  '/icon-180.png': ['icon-180.png', 'image/png'],
+  '/icon-192.png': ['icon-192.png', 'image/png'],
+  '/icon-512.png': ['icon-512.png', 'image/png']
 };
 const COOKIE = 'still_device';
 const API = '/api/v1';
@@ -31,7 +39,7 @@ class HttpError extends Error {
   constructor(status, code, message) { super(message); this.status = status; this.code = code; }
 }
 
-function createSyncServer({ repo, importer, tls, libraryApi = null, webDir = path.join(__dirname, 'web'), appVersion = '1.0.0', onChange = () => {}, onBytes = () => {}, now = Date.now, rateLimits = {} }) {
+function createSyncServer({ repo, importer, tls, libraryApi = null, branding = null, webDir = path.join(__dirname, 'web'), appVersion = '1.0.0', onChange = () => {}, onBytes = () => {}, now = Date.now, rateLimits = {} }) {
   const pairLimiter = createLimiter(rateLimits.pair || 10, 60000, now);
   const apiLimiter = createLimiter(rateLimits.api || 600, 60000, now);
   const browseLimiter = createLimiter(rateLimits.browse || 6000, 60000, now);
@@ -111,16 +119,25 @@ function createSyncServer({ repo, importer, tls, libraryApi = null, webDir = pat
     sourceAssetId: asset.source_asset_id,
     filename: asset.filename,
     state: asset.state,
+    status: assetStatus(asset),
     size: asset.size,
     bytesReceived: asset.bytes_received,
     sha256: asset.sha256,
-    duplicateOf: asset.duplicate_of,
+    duplicateOf: asset.duplicate_of || asset.duplicate_library_path,
     retryCount: asset.retry_count,
     folderPath: asset.folder_path,
     libraryPath: asset.library_path,
     deviceDeletedAt: asset.device_deleted_at,
     error: asset.last_error
   });
+  function assetStatus(asset) {
+    if (asset.duplicate_of || asset.duplicate_library_path || asset.last_error === 'duplicate') return 'duplicate';
+    if (importer.isVerifying(asset.id)) return 'verifying';
+    if (asset.state === 'indexed') return 'imported';
+    if (asset.state.startsWith('failed_')) return 'failed';
+    if (asset.state === 'uploading') return 'uploading';
+    return 'pending';
+  }
   const serializeSession = session => ({ id: session.id, status: session.status, createdAt: session.created_at, completedAt: session.completed_at, progress: repo.progress(session.id) });
 
   // A file is safe to delete on the phone only when the PC copy exists on disk and its hash matches the phone's.
@@ -143,6 +160,11 @@ function createSyncServer({ repo, importer, tls, libraryApi = null, webDir = pat
 
     if (route === '/ping' && method === 'GET') {
       send(res, 200, { service: 'still-wifi-sync', apiVersion: 1, appVersion, tls: Boolean(tls), time: now() });
+      return;
+    }
+    // Public, non-secret product branding so the pairing page can show it before a device is paired.
+    if (route === '/branding' && method === 'GET') {
+      send(res, 200, branding ? branding.publicView() : { ...BRAND_DEFAULTS, logo: undefined, logoUrl: '' }, { 'Cache-Control': 'no-cache' });
       return;
     }
     if (route === '/pairing/claim' && method === 'POST') {
@@ -175,10 +197,11 @@ function createSyncServer({ repo, importer, tls, libraryApi = null, webDir = pat
       send(res, 200, { ok: true }, { 'Set-Cookie': `${COOKIE}=; HttpOnly; SameSite=Strict; Path=${API}; Max-Age=0${tls ? '; Secure' : ''}` });
       return;
     }
-    if (libraryApi && await libraryApi.handle({ req, res, route, url, device, send, readJson, HttpError, isActive: () => Boolean(repo.authenticate(device.token)) })) return;
+    if (libraryApi && await libraryApi.handle({ req, res, route, url, device, repo, send, readJson, HttpError, isActive: () => Boolean(repo.authenticate(device.token)) })) return;
 
     if (route === '/device' && method === 'GET') {
-      send(res, 200, { id: device.id, name: device.name, platform: device.platform, lastSyncAt: device.last_sync_at });
+      send(res, 200, { id: device.id, name: device.name, platform: device.platform, lastSyncAt: device.last_sync_at,
+        policy: { familyEnabled: repo.getSettings().familyEnabled, profileId: device.profile_id, uploadEnabled: !repo.family.uploadProblem(device.id), allowImages: Boolean(device.allow_images), allowVideos: Boolean(device.allow_videos), maxFileSizeMB: Math.min(device.max_file_size_mb, repo.getSettings().maxFileSizeMB) } });
       return;
     }
     if (route === '/device' && method === 'DELETE') {
@@ -189,6 +212,8 @@ function createSyncServer({ repo, importer, tls, libraryApi = null, webDir = pat
       return;
     }
     if (route === '/sessions' && method === 'POST') {
+      const problem = repo.family.uploadProblem(device.id);
+      if (problem) throw new HttpError(403, 'upload_policy', problem);
       const key = String(req.headers['idempotency-key'] || '').trim();
       if (!key || key.length > 128) throw new HttpError(400, 'idempotency_key_required', 'Idempotency-Key header is required.');
       const { session, created } = repo.createSession(device.id, key);
@@ -221,9 +246,13 @@ function createSyncServer({ repo, importer, tls, libraryApi = null, webDir = pat
       const body = await readJson(req);
       if (!Array.isArray(body.assets) || !body.assets.length || body.assets.length > MAX_BATCH) throw new HttpError(400, 'invalid_request', `assets must contain 1-${MAX_BATCH} items.`);
       const settings = repo.getSettings();
+      const problem = repo.family.uploadProblem(device.id);
+      if (problem) throw new HttpError(403, 'upload_policy', problem);
       const results = body.assets.map(meta => {
         try {
           const valid = importer.validateRegistration(meta || {}, settings);
+          const denied = repo.family.uploadProblem(device.id, valid);
+          if (denied) throw new ImportError('upload_policy', denied, 403);
           const { asset } = repo.registerAsset(device.id, session.id, valid);
           if (asset.state === 'discovered') repo.update(asset.id, { state: 'queued' });
           return { sourceAssetId: valid.sourceAssetId, asset: serializeAsset(repo.getAsset(asset.id)) };
@@ -272,6 +301,8 @@ function createSyncServer({ repo, importer, tls, libraryApi = null, webDir = pat
         res.end();
         return;
       }
+      const problem = repo.family.uploadProblem(device.id, asset);
+      if (problem) throw new HttpError(403, 'upload_policy', problem);
       if (['indexed', 'stored'].includes(asset.state)) { send(res, 200, serializeAsset(asset), { 'Upload-Offset': String(asset.size) }); return; }
       if (['cancelled', 'failed_permanent'].includes(asset.state)) throw new HttpError(409, 'asset_closed', `Asset is ${asset.state}.`);
       const offset = req.headers['upload-offset'] === undefined ? 0 : Number(req.headers['upload-offset']);
@@ -289,7 +320,7 @@ function createSyncServer({ repo, importer, tls, libraryApi = null, webDir = pat
       try {
         received = await importer.receive(asset, counted, offset, settings);
       } catch (error) {
-        if (error instanceof ImportError && ['insufficient_storage', 'size_exceeded'].includes(error.code)) {
+        if (error instanceof ImportError && ['insufficient_storage', 'storage_unavailable', 'size_exceeded'].includes(error.code)) {
           error.code === 'size_exceeded' ? repo.failPermanent(asset.id, error.message) : repo.failRetryable(asset.id, error.message);
         } else if (!(error instanceof ImportError)) {
           if (repo.getAsset(asset.id).state === 'uploading') repo.update(asset.id, { state: 'queued' });
@@ -311,10 +342,16 @@ function createSyncServer({ repo, importer, tls, libraryApi = null, webDir = pat
     if (!entry) return false;
     let body;
     try { body = fsSync.readFileSync(path.join(webDir, entry[0])); } catch { return false; }
+    if (pathname === '/manifest.webmanifest' && branding) {
+      try {
+        const brand = branding.get();
+        body = JSON.stringify({ ...JSON.parse(body.toString('utf8')), name: brand.syncName, short_name: brand.shortName }, null, 2);
+      } catch { /* serve the static manifest */ }
+    }
     send(res, 200, body, {
       'Content-Type': entry[1],
       'Cache-Control': 'no-cache',
-      'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; manifest-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+      'Content-Security-Policy': "default-src 'none'; script-src 'self'; worker-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; manifest-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
       'Referrer-Policy': 'no-referrer'
     });
     return true;
@@ -331,6 +368,12 @@ function createSyncServer({ repo, importer, tls, libraryApi = null, webDir = pat
         await handleApi(req, res, url, ip);
         return;
       }
+      if ((req.method === 'GET' || req.method === 'HEAD') && url.pathname === '/brand-logo') {
+        const logo = branding && branding.logo();
+        if (!logo) throw new HttpError(404, 'not_found', 'No custom logo.');
+        send(res, 200, logo.data, { 'Content-Type': logo.type, 'Cache-Control': 'public, max-age=86400', 'Content-Security-Policy': "default-src 'none'" });
+        return;
+      }
       if ((req.method === 'GET' || req.method === 'HEAD') && serveWeb(res, url.pathname)) return;
       throw new HttpError(404, 'not_found', 'Not found.');
     } catch (error) {
@@ -341,6 +384,7 @@ function createSyncServer({ repo, importer, tls, libraryApi = null, webDir = pat
   let server = null;
 
   function listen({ host, port, attempts = 10 }) {
+    if (!security.isPrivateAddress(host)) return Promise.reject(new Error('Sync must bind an explicit private LAN or loopback IP address. Public, wildcard and hostname listeners are not allowed.'));
     return new Promise((resolve, reject) => {
       let candidate = port;
       const attempt = () => {

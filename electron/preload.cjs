@@ -23,12 +23,22 @@ contextBridge.exposeInMainWorld('desktopLibrary', Object.freeze({
   importIndex: libraryId => validId(libraryId) ? ipcRenderer.invoke('index:import', libraryId) : Promise.reject(new Error('Invalid photo library identifier.')),
   exportIndex: (libraryId, index) => validId(libraryId) ? ipcRenderer.invoke('index:export', libraryId, index) : Promise.reject(new Error('Invalid photo library identifier.')),
   readPhoto: (libraryId, relativePath) => validId(libraryId) && typeof relativePath === 'string' ? ipcRenderer.invoke('photo:read', libraryId, relativePath) : Promise.reject(new Error('Invalid photo request.')),
+  readPhotoPreview: (libraryId, relativePath) => validId(libraryId) && typeof relativePath === 'string' ? ipcRenderer.invoke('photo:preview', libraryId, relativePath) : Promise.reject(new Error('Invalid photo preview request.')),
   moveFolder: (libraryId, from, to) => validId(libraryId) && typeof from === 'string' && typeof to === 'string' ? ipcRenderer.invoke('folder:move', libraryId, from, to) : Promise.reject(new Error('Invalid folder request.')),
   loadSession: () => ipcRenderer.invoke('session:load'),
   saveSession: ui => ipcRenderer.invoke('session:save', ui && typeof ui === 'object' ? ui : {}),
   cachedScan: libraryId => validId(libraryId) ? ipcRenderer.invoke('library:cached-scan', libraryId) : Promise.reject(new Error('Invalid photo library identifier.')),
   toggleFullscreen: () => ipcRenderer.invoke('window:toggle-fullscreen'),
   isFullscreen: () => ipcRenderer.invoke('window:is-fullscreen')
+}));
+
+contextBridge.exposeInMainWorld('desktopBranding', Object.freeze({
+  get: () => ipcRenderer.invoke('branding:get'),
+  onChange: callback => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('branding:changed', listener);
+    return () => ipcRenderer.removeListener('branding:changed', listener);
+  }
 }));
 
 contextBridge.exposeInMainWorld('desktopAuth', Object.freeze({
@@ -53,8 +63,22 @@ contextBridge.exposeInMainWorld('adminApi', Object.freeze({
   session: id => ipcRenderer.invoke('admin:session', id),
   retrySession: id => ipcRenderer.invoke('admin:session-retry', id),
   sessionsCsv: query => ipcRenderer.invoke('admin:sessions-csv', query),
+  files: query => ipcRenderer.invoke('admin:files', query),
+  queue: () => ipcRenderer.invoke('admin:queue'),
+  family: () => ipcRenderer.invoke('admin:family'),
+  saveFamily: input => ipcRenderer.invoke('admin:family-save', input),
+  retryAsset: id => ipcRenderer.invoke('admin:asset-retry', id),
+  cancelAsset: id => ipcRenderer.invoke('admin:asset-cancel', id),
+  pauseUploads: () => ipcRenderer.invoke('admin:uploads-pause'),
+  resumeUploads: () => ipcRenderer.invoke('admin:uploads-resume'),
   activity: query => ipcRenderer.invoke('admin:activity', query),
   system: () => ipcRenderer.invoke('admin:system'),
+  backupStatus: () => ipcRenderer.invoke('admin:backup-status'),
+  backupJob: id => ipcRenderer.invoke('admin:backup-job', id),
+  backupDestination: () => ipcRenderer.invoke('admin:backup-destination'),
+  backupOpen: () => ipcRenderer.invoke('admin:backup-open'),
+  backupStart: (kind, options) => ipcRenderer.invoke('admin:backup-start', kind, options),
+  backupRestart: () => ipcRenderer.invoke('admin:backup-restart'),
   users: () => ipcRenderer.invoke('admin:users'),
   authStatus: () => ipcRenderer.invoke('admin:auth-status'),
   login: (username, password) => ipcRenderer.invoke('admin:login', username, password),
@@ -73,6 +97,9 @@ contextBridge.exposeInMainWorld('adminApi', Object.freeze({
   chatImage: (messageId, id) => ipcRenderer.invoke('admin:chat-image', messageId, id),
   notify: input => ipcRenderer.invoke('admin:notify', input),
   sentNotifications: () => ipcRenderer.invoke('admin:notifications-sent'),
+  branding: () => ipcRenderer.invoke('admin:branding'),
+  saveBranding: patch => ipcRenderer.invoke('admin:branding-save', patch && typeof patch === 'object' ? patch : {}),
+  resetBranding: () => ipcRenderer.invoke('admin:branding-reset'),
   onChatEvent: callback => {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on('admin:chat-event', listener);

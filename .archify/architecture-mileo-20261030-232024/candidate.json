@@ -1,0 +1,200 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "MiLeo Photo Library - desktop and LAN architecture",
+    "locale": "en",
+    "output": ".archify/architecture-mileo-20261030-232024/mileo.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/ngovandiep/photo-view.git",
+      "revision": "bf61edceddbcd6de1065ef32954a88d2edcf8ddf",
+      "link_mode": "web"
+    }
+  },
+  "components": [
+    {
+      "id": "desktop-ui",
+      "type": "frontend",
+      "label": "Desktop renderer",
+      "sublabel": "Library, viewer and Admin UI",
+      "pos": [40, 40],
+      "size": [240, 100],
+      "sources": [
+        { "path": "app.js", "line": 289, "end_line": 320, "label": "Load library and restore browsing" },
+        { "path": "electron/preload.cjs", "line": 3, "end_line": 29, "label": "Explicit contextBridge API" },
+        { "path": "electron/wifi-sync/ipc.cjs", "line": 79, "end_line": 133, "label": "Admin session gate and operations" }
+      ]
+    },
+    {
+      "id": "desktop-host",
+      "type": "backend",
+      "label": "Electron library host",
+      "sublabel": "Scan, media I/O, index persistence",
+      "tag": "Registered folders only",
+      "pos": [420, 40],
+      "size": [250, 100],
+      "sources": [
+        { "path": "electron/main.cjs", "line": 125, "end_line": 251, "label": "JSON persistence, scans and reads" },
+        { "path": "electron/main.cjs", "line": 345, "end_line": 400, "label": "Library and index IPC handlers" },
+        { "path": "electron/wifi-sync/ipc.cjs", "line": 48, "end_line": 60, "label": "Reuse indexStore.addPhoto" }
+      ]
+    },
+    {
+      "id": "library-metadata",
+      "type": "database",
+      "label": "Library metadata",
+      "sublabel": "JSON indexes, roots and sessions",
+      "tag": "Not a photo SQLite database",
+      "pos": [840, 40],
+      "size": [250, 100],
+      "sources": [
+        { "path": "electron/main.cjs", "line": 24, "end_line": 40, "label": "Library data and index locations" },
+        { "path": "electron/main.cjs", "line": 125, "end_line": 152, "label": "Validated index read and write" },
+        { "path": "electron/session-state.cjs", "line": 45, "end_line": 85, "label": "UI state and scan-cache JSON" }
+      ]
+    },
+    {
+      "id": "account-service",
+      "type": "backend",
+      "label": "Account and chat server",
+      "sublabel": "Embedded Node HTTP service",
+      "tag": "Default: 127.0.0.1:3000",
+      "pos": [40, 260],
+      "size": [240, 100],
+      "sources": [
+        { "path": "electron/main.cjs", "line": 443, "end_line": 465, "label": "Embedded server and loopback bind" },
+        { "path": "server/app.js", "line": 14, "end_line": 17, "label": "Database-backed chat service" },
+        { "path": "server/app.js", "line": 63, "end_line": 99, "label": "Accounts and JWT authorization" }
+      ]
+    },
+    {
+      "id": "account-database",
+      "type": "database",
+      "label": "Account SQLite",
+      "sublabel": "Users, roles and chat records",
+      "tag": "account-server / still.db",
+      "pos": [40, 460],
+      "size": [240, 100],
+      "sources": [
+        { "path": "server/db/index.js", "line": 6, "end_line": 18, "label": "node:sqlite, schema and WAL" },
+        { "path": "server/db/schema.sql", "label": "Account and chat tables" },
+        { "path": "electron/main.cjs", "line": 443, "end_line": 458, "label": "Desktop database location" }
+      ]
+    },
+    {
+      "id": "originals",
+      "type": "database",
+      "label": "Original media files",
+      "sublabel": "User-owned library folders",
+      "tag": "Separate from metadata and caches",
+      "pos": [840, 300],
+      "size": [250, 100],
+      "sources": [
+        { "path": "electron/main.cjs", "line": 238, "end_line": 251, "label": "Read only inside registered roots" },
+        { "path": "electron/wifi-sync/importer.cjs", "line": 151, "end_line": 190, "label": "Place files without overwriting" },
+        { "path": "electron/wifi-sync/importer.cjs", "line": 233, "end_line": 240, "label": "Commit stored file reference" }
+      ]
+    },
+    {
+      "id": "phone-web",
+      "type": "frontend",
+      "label": "Phone web companion",
+      "sublabel": "Browse and manually upload",
+      "tag": "Pair before protected operations",
+      "pos": [40, 660],
+      "size": [240, 100],
+      "sources": [
+        { "path": "electron/wifi-sync/web/app.js", "line": 5, "end_line": 24, "label": "Versioned API requests" },
+        { "path": "electron/wifi-sync/web/app.js", "line": 75, "end_line": 90, "label": "Claim device pairing" },
+        { "path": "electron/wifi-sync/server.cjs", "line": 148, "end_line": 178, "label": "Pairing and device authorization" }
+      ]
+    },
+    {
+      "id": "sync-engine",
+      "type": "backend",
+      "label": "LAN sync engine",
+      "sublabel": "REST, pairing, resume and import",
+      "tag": "Off by default; private-LAN HTTPS",
+      "pos": [420, 660],
+      "size": [250, 100],
+      "sources": [
+        { "path": "electron/wifi-sync/service.cjs", "line": 11, "end_line": 69, "label": "Server ownership and recovery" },
+        { "path": "electron/wifi-sync/server.cjs", "line": 92, "end_line": 178, "label": "Device credential enforcement" },
+        { "path": "electron/wifi-sync/importer.cjs", "line": 114, "end_line": 246, "label": "Stream, hash, deduplicate and index" }
+      ]
+    },
+    {
+      "id": "sync-database",
+      "type": "database",
+      "label": "Sync SQLite",
+      "sublabel": "Devices, jobs, offsets and activity",
+      "tag": "wifi-sync / wifi-sync.db",
+      "pos": [840, 660],
+      "size": [250, 100],
+      "sources": [
+        { "path": "electron/wifi-sync/db.cjs", "line": 12, "end_line": 100, "label": "Persistent synchronization schema" },
+        { "path": "electron/wifi-sync/repo.cjs", "line": 22, "end_line": 70, "label": "Settings, audit and pairing writes" },
+        { "path": "electron/wifi-sync/service.cjs", "line": 11, "end_line": 14, "label": "Actual database filename" }
+      ]
+    },
+    {
+      "id": "partial-files",
+      "type": "database",
+      "label": "Partial upload files",
+      "sublabel": "incoming / resumable byte streams",
+      "tag": "Not the final photo library",
+      "pos": [420, 880],
+      "size": [250, 100],
+      "sources": [
+        { "path": "electron/wifi-sync/importer.cjs", "line": 113, "end_line": 140, "label": "Offset-checked temp-file writes" },
+        { "path": "electron/wifi-sync/service.cjs", "line": 11, "end_line": 14, "label": "Incoming-directory configuration" }
+      ]
+    }
+  ],
+  "connections": [
+    { "id": "renderer-ipc", "from": "desktop-ui", "to": "desktop-host", "label": "Preload IPC", "variant": "emphasis" },
+    { "id": "metadata-io", "from": "desktop-host", "to": "library-metadata", "label": "Read / write" },
+    { "id": "original-reads", "from": "desktop-host", "to": "originals", "label": "Read / stream" },
+    { "id": "local-accounts", "from": "desktop-host", "to": "account-service", "label": "Embedded server" },
+    { "id": "account-sql", "from": "account-service", "to": "account-database", "label": "SQL" },
+    { "id": "phone-api", "from": "phone-web", "to": "sync-engine", "label": "HTTPS /api/v1", "variant": "security" },
+    { "id": "sync-records", "from": "sync-engine", "to": "sync-database", "label": "Persist state" },
+    { "id": "receive-partials", "from": "sync-engine", "to": "partial-files", "label": "Stream chunks" },
+    { "id": "verified-originals", "from": "sync-engine", "to": "originals", "label": "Store verified" },
+    { "id": "shared-library", "from": "sync-engine", "to": "desktop-host", "label": "Shared index adapter", "variant": "emphasis" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Local-first ownership",
+      "items": [
+        "Electron owns filesystem access; the renderer calls explicit preload APIs.",
+        "Library metadata is JSON, not the sync or account SQLite database.",
+        "Original media remains in user-controlled folders. Thumbnail caches are derived.",
+        "The LAN service is opt-in. Pairing is public but short-lived; protected routes require a device credential."
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Ingestion and recovery",
+      "items": [
+        "Upload offsets and job state survive restart; incoming files hold partial bytes.",
+        "The importer validates type and size, computes SHA-256, and detects prior-sync duplicates.",
+        "After safe storage, the injected adapter reuses indexStore.addPhoto and JSON persistence.",
+        "In the pinned commit, images enter that adapter; videos are stored but skip indexing. M1 changes this in the working tree."
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Current working-tree additions",
+      "items": [
+        "Solid topology and source links describe commit bf61edc, not uncommitted code.",
+        "Native Android exists locally: Compose UI, MediaStore, WorkManager, Room queue and certificate-pinned HTTPS to the same LAN API.",
+        "M1 adds expected-hash checks, library-wide duplicates and video indexing; M3 adds file history and upload-queue controls.",
+        "Android and M3 are not commit-linked nodes here. iOS native sync is not implemented.",
+        "Other dirty additions include branding and preview workers; this is a subsystem overview, not a file inventory."
+      ]
+    }
+  ]
+}

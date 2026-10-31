@@ -38,6 +38,16 @@ function errorCategory(message) {
   return 'other';
 }
 
+function assetStatus(asset) {
+  if (asset.duplicate_of || asset.duplicate_library_path || asset.last_error === 'duplicate') return 'duplicate';
+  if (asset.state === 'indexed') return 'imported';
+  if (asset.state === 'stored') return 'verifying';
+  if (asset.state.startsWith('failed_')) return 'failed';
+  if (asset.state === 'uploading') return 'uploading';
+  if (asset.state === 'cancelled') return 'cancelled';
+  return 'pending';
+}
+
 function sessionStatus(row) {
   if (row.status === 'cancelled') return 'cancelled';
   if (row.status === 'open') return row.started > 0 ? 'running' : 'queued';
@@ -219,6 +229,70 @@ function createAdmin({ service, dataDir, listLibraries, readIndex, getAccount = 
 
   const sessions = (filters = {}) => page(filteredSessions(filters), filters);
 
+  const FILE_STATUSES = ['pending', 'uploading', 'verifying', 'imported', 'duplicate', 'failed', 'cancelled'];
+  const FILE_COLUMNS = `a.id, a.device_id, a.session_id, a.filename, a.media_kind, a.size, a.state, a.bytes_received, a.retry_count, a.next_retry_at, a.last_error,
+    a.sha256, a.expected_sha256, a.duplicate_of, a.duplicate_library_path, a.created_at, a.updated_at, a.stored_at, a.indexed_at, a.library_path, d.name AS device_name`;
+
+  function verification(row) {
+    if (assetStatus(row) === 'duplicate') return 'duplicate';
+    if (['stored', 'indexed'].includes(row.state) && row.sha256) return 'verified';
+    if (/sha-256|checksum|does not match/i.test(row.last_error || '')) return 'mismatch';
+    return 'not_verified';
+  }
+
+  // Library paths, tokens and full hashes stay on the desktop; the history only shows what an administrator needs.
+  function serializeFile(row) {
+    const status = assetStatus(row);
+    const failed = status === 'failed';
+    return {
+      id: row.id, deviceId: row.device_id, deviceName: row.device_name, sessionId: row.session_id, name: row.filename, kind: row.media_kind,
+      size: row.size, bytesReceived: row.bytes_received, state: row.state, status, verification: verification(row),
+      createdAt: row.created_at, updatedAt: row.updated_at, storedAt: row.stored_at, indexedAt: row.indexed_at,
+      retryCount: row.retry_count, nextRetryAt: row.next_retry_at, error: failed || row.state === 'cancelled' ? row.last_error || '' : '',
+      errorCategory: failed ? errorCategory(row.last_error) : '', sha256: row.sha256 ? row.sha256.slice(0, 16) : '',
+      inLibrary: Boolean(row.library_path && row.stored_at)
+    };
+  }
+
+  function files(filters = {}) {
+    const where = [];
+    const params = [];
+    const deviceId = text(filters.deviceId, 64);
+    const search = text(filters.search);
+    const status = oneOf(filters.status, FILE_STATUSES);
+    if (deviceId) { where.push('a.device_id = ?'); params.push(deviceId); }
+    if (timestamp(filters.from)) { where.push('a.updated_at >= ?'); params.push(timestamp(filters.from)); }
+    if (timestamp(filters.to)) { where.push('a.updated_at < ?'); params.push(timestamp(filters.to)); }
+    if (search) { where.push("a.filename LIKE ? ESCAPE '\\'"); params.push(`%${likeEscape(search)}%`); }
+    let rows = q(`SELECT ${FILE_COLUMNS} FROM assets a JOIN devices d ON d.id = a.device_id ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+                  ORDER BY a.updated_at DESC LIMIT 10000`).all(...params).map(serializeFile);
+    if (status) rows = rows.filter(row => row.status === status);
+    rows.sort(sorter(text(filters.sort, 20), filters.dir === 'asc' ? 'asc' : 'desc', {
+      default: row => row.updatedAt, name: row => row.name.toLowerCase(), device: row => row.deviceName.toLowerCase(), size: row => row.size, status: row => row.status
+    }));
+    return page(rows, filters);
+  }
+
+  function queue() {
+    const rows = q(`SELECT ${FILE_COLUMNS} FROM assets a JOIN devices d ON d.id = a.device_id
+                    WHERE a.state IN ('discovered','queued','uploading','stored','failed_retryable','failed_permanent')
+                    ORDER BY a.updated_at DESC LIMIT 2000`).all();
+    const active = [];
+    const pending = [];
+    const failed = [];
+    for (const row of rows) {
+      const item = serializeFile(row);
+      item.transferring = service.importer.isActive(row.id);
+      item.verifying = service.importer.isVerifying(row.id) || row.state === 'stored';
+      item.canCancel = ['discovered', 'queued', 'uploading', 'failed_retryable'].includes(row.state) && !item.inLibrary && !item.transferring && !service.importer.isVerifying(row.id);
+      item.canRetry = ['failed_retryable', 'failed_permanent'].includes(row.state) || (row.state === 'stored' && !service.importer.isVerifying(row.id));
+      if (row.state.startsWith('failed_')) failed.push(item);
+      else if (item.transferring || item.verifying || row.state === 'uploading') active.push(item);
+      else pending.push(item);
+    }
+    return { running: service.isRunning(), active, pending, failed, truncated: rows.length >= 2000 };
+  }
+
   function sessionsCsv(filters = {}) {
     const header = ['Session ID', 'Device', 'Started', 'Ended', 'Duration (s)', 'Total files', 'Synchronized', 'Failed', 'Bytes transferred', 'Status'];
     const lines = [header.map(csvCell).join(',')];
@@ -236,13 +310,13 @@ function createAdmin({ service, dataDir, listLibraries, readIndex, getAccount = 
     const key = text(id, 64);
     const row = sessionRows({ id: key })[0];
     if (!row) throw new Error('Session not found.');
-    const files = q(`SELECT id, filename, media_kind, size, state, bytes_received, retry_count, last_error, sha256, duplicate_of
+    const files = q(`SELECT id, filename, media_kind, size, state, bytes_received, retry_count, last_error, sha256, duplicate_of, duplicate_library_path
                      FROM assets WHERE session_id = ? ORDER BY updated_at DESC LIMIT 500`).all(key).map(file => {
       const failed = file.state === 'failed_retryable' || file.state === 'failed_permanent';
       return {
-        id: file.id, name: file.filename, kind: file.media_kind, size: file.size, state: file.state, bytesReceived: file.bytes_received,
+        id: file.id, name: file.filename, kind: file.media_kind, size: file.size, state: file.state, status: assetStatus(file), bytesReceived: file.bytes_received,
         retryCount: file.retry_count, error: failed ? file.last_error : '', errorCategory: failed ? errorCategory(file.last_error) : '',
-        duplicate: Boolean(file.duplicate_of), checksum: file.sha256 && ['stored', 'indexed'].includes(file.state) ? 'recorded' : 'unavailable',
+        duplicate: Boolean(file.duplicate_of || file.duplicate_library_path), checksum: file.sha256 && ['stored', 'indexed'].includes(file.state) ? 'recorded' : 'unavailable',
         sha256: file.sha256 ? file.sha256.slice(0, 16) : ''
       };
     });
@@ -272,7 +346,7 @@ function createAdmin({ service, dataDir, listLibraries, readIndex, getAccount = 
     const categories = failedCategories();
     const uploads = Object.fromEntries(q('SELECT state, COUNT(*) AS n FROM assets WHERE device_id = ? GROUP BY state').all(key).map(item => [item.state, item.n]));
     const totals = q(`SELECT COALESCE(SUM(bytes_received), 0) AS bytes, COUNT(CASE WHEN media_kind = 'image' THEN 1 END) AS images, COUNT(CASE WHEN media_kind = 'video' THEN 1 END) AS videos,
-                      COUNT(CASE WHEN duplicate_of IS NOT NULL THEN 1 END) AS duplicates FROM assets WHERE device_id = ?`).get(key);
+                      COUNT(CASE WHEN duplicate_of IS NOT NULL OR duplicate_library_path IS NOT NULL THEN 1 END) AS duplicates FROM assets WHERE device_id = ?`).get(key);
     return {
       device: serializeDevice(row, running),
       uploads, totals,
@@ -386,7 +460,10 @@ function createAdmin({ service, dataDir, listLibraries, readIndex, getAccount = 
         syncedPhotos: syncedBy('image'), syncedVideos: syncedBy('video'),
         failedJobs: (counts.failed_retryable || 0) + (counts.failed_permanent || 0),
         pendingJobs: (counts.discovered || 0) + (counts.queued || 0) + (counts.uploading || 0),
-        libraryBytes: library.bytes
+        libraryBytes: library.bytes,
+        libraryAssets: library.photos + library.videos + library.documents,
+        uploadedAssets: q(`SELECT COUNT(*) AS n FROM assets WHERE state IN ${OK_STATES} AND duplicate_of IS NULL AND duplicate_library_path IS NULL`).get().n,
+        registeredDevices: rows.length
       },
       recentSessions: sessionList.slice(0, 6),
       recentDevices: rows.filter(row => row.lastSeenAt).sort((a, b) => b.lastSeenAt - a.lastSeenAt).slice(0, 5),
@@ -428,6 +505,7 @@ function createAdmin({ service, dataDir, listLibraries, readIndex, getAccount = 
     const check = (() => { try { return q('PRAGMA quick_check').get().quick_check; } catch (error) { return error.message; } })();
     const dbFile = await fs.stat(path.join(dataDir, 'wifi-sync.db')).catch(() => null);
     const thumbs = await folderStats(path.join(dataDir, 'thumbs'));
+    const incoming = { path: path.join(dataDir, 'incoming'), ...(await folderStats(path.join(dataDir, 'incoming'))) };
     const warnings = [];
     if (space && (space.freeBytes < settings.minFreeSpaceMB * 1024 * 1024 * 2 || space.freeBytes < space.totalBytes * 0.05)) warnings.push('Free disk space is running low.');
     if (stuck) warnings.push(`${stuck} sync job(s) have not changed for over 30 minutes and may be stuck.`);
@@ -437,7 +515,7 @@ function createAdmin({ service, dataDir, listLibraries, readIndex, getAccount = 
       libraries: library.libraries, totals: { photos: library.photos, videos: library.videos, documents: library.documents, bytes: library.bytes },
       disk: space, pendingIndexing, pendingSync, stuck,
       indexing: pendingIndexing ? 'working' : 'idle',
-      thumbnails: { ...thumbs, mode: 'On demand, cached' },
+      thumbnails: { ...thumbs, mode: 'On demand, cached' }, incoming,
       database: { status: check === 'ok' ? 'ok' : 'error', detail: check, bytes: dbFile ? dbFile.size : 0, schemaVersion: q('PRAGMA user_version').get().user_version },
       server: { running: status.running, reachable: status.running ? (await probe(status)).reachable : null },
       dataDirectory: dataDir, warnings
@@ -456,7 +534,7 @@ function createAdmin({ service, dataDir, listLibraries, readIndex, getAccount = 
     return { profile: profile ? { email: profile.email, displayName: profile.displayName } : null, directory, deviceCount: deviceRows().filter(row => !row.revoked_at).length };
   }
 
-  return { overview, wifi, devices, deviceDetail, sessions, sessionDetail, sessionsCsv, retrySession, activity, system, users, errorCategory };
+  return { overview, wifi, devices, deviceDetail, sessions, sessionDetail, sessionsCsv, retrySession, files, queue, activity, system, users, errorCategory, assetStatus };
 }
 
 module.exports = { createAdmin, errorCategory, sessionStatus, SESSION_STATUSES, DEVICE_STATUSES, ERROR_CATEGORIES };

@@ -166,3 +166,4 @@
 .ad-chat-chip{padding:4px 12px;font-size:12px}
 .ad-chat-chip[hidden]{display:none}
 .ad-picks{max-height:160px;overflow-y:auto;display:flex;flex-direction:column;gap:4px;padding:4px 0}
+.ad-brand-preview{display:flex;align-items:center;gap:14px}.ad-brand-preview strong{display:block;font-size:18px}.ad-brand-preview small{color:var(--muted)}.ad-brand-mark{flex:none;width:52px;height:52px;border-radius:10px;background:var(--accent);color:#fff;display:grid;place-items:center;font-size:26px;font-weight:800;overflow:hidden}.ad-brand-mark.has-logo{background:transparent;border:1px solid var(--line)}.ad-brand-mark img{width:100%;height:100%;object-fit:contain}.ad-field input.ad-file{padding:5px}

@@ -1,12 +1,43 @@
-# Still / Local Photo Library
+# MiLeo Photo Library
+
+*Your memories. Your library. Your world.*
 
 A personal photo browser built with HTML, CSS, and vanilla JavaScript. It can run as a static browser app or as a Windows Electron desktop app. Both modes read selected photos and videos without changing originals; the core app has no backend, database server, cloud integration or AI classification (the optional account server and Wi-Fi sync are described below). Videos (MP4, M4V, MOV, WebM, MKV, OGV, AVI, 3GP) are indexed alongside photos and play in the viewer with the built-in player; playback depends on the codec, so some HEVC/H.265 or AVI files may not play.
 
 For the Windows desktop build and usage instructions, see the [Vietnamese guide](VI_README.md). Electron stores registered folder paths and versioned JSON indexes in its per-user `userData` directory. The desktop app remembers accessible folders between launches and uses native dialogs for folder selection and index backup/restore. Build with `npm install`, `npm start`, and `npm run dist:win` from this directory. The generated installer is unsigned unless you configure code signing.
 
-## Wi-Fi Photo Sync (desktop app)
+## Branding (MiLeo)
+
+The product is **MiLeo Photo Library** (short name **MiLeo**), named after Mike (Minh Khang) and Leo (Quang Đăng). Its tagline is *"Your memories. Your library. Your world."* The phone companion and Wi-Fi sync are **MiLeo Sync**; **MiLeo AI** is reserved for future AI-powered features. There are no AI features in this version.
+
+These values are defaults. An administrator can change them in **Admin dashboard → Branding**: application name, short name, slogan, mobile sync name, AI features name, website URL (http/https only, shown as a sidebar link that opens in the system browser), and logo (PNG, JPEG or WebP, up to 512 KB). Changes apply immediately to the desktop window and to phones the next time they load the page. **Reset to defaults** restores MiLeo. Settings are stored in `branding.json` inside the app's `userData` folder. Changes are recorded in the activity log.
+
+Runtime branding cannot rename installed files. The executable, installer, Start Menu shortcut and phone Home Screen icons keep the names they were built or installed with. Packaging names are set in `package.json`.
+
+For compatibility, some internal identifiers keep the old "Still" name. These include the Windows app ID `com.still.photolibrary`, the `%APPDATA%\Still Photo Library` data folder, the `still-photo-library-index` JSON format, the `still-media` protocol, `still.db` and `still-*` storage keys. Existing libraries, accounts and pairings therefore carry over after the upgrade.
+
+## MiLeo Sync: Wi-Fi photo sync (desktop app)
 
 The desktop app can optionally receive photos from a phone over the local network (HTTPS, QR pairing, per-device revocation, resumable uploads). It is off until you press **Start sync server** in the sidebar's **Wi-Fi Sync** panel. The same server also hosts a **mobile web app**: scan the pairing QR code with the phone camera to browse, search, play and favorite the PC's library live (see "Phone web app" in the doc below). See [docs/WIFI_SYNC.md](docs/WIFI_SYNC.md) for setup, security model and the API.
+
+## Backup, integrity and recovery (desktop)
+
+Use **Admin dashboard > Backup & recovery** for verified metadata snapshots,
+optional original-media copies, read-only integrity checks and restart-based
+restore. Originals are never overwritten by recovery; restored credentials
+are invalidated. Backups must use a separate, trusted local destination.
+See [Backup and recovery procedures](docs/BACKUP_RECOVERY.md) for safety,
+limitations and the tested restore procedure.
+
+## Family devices and shared albums (desktop)
+
+Use **Admin dashboard > Family & sharing** to associate local accounts with
+profiles and paired devices, grant read-only album access, and set per-device
+upload policies. Family mode is opt-in and off by default for compatibility;
+when enabled, unassigned devices cannot upload or browse. Existing Desktop
+navigation and local albums are unchanged.
+See [Family sharing, external storage and VPN architecture](docs/FAMILY_SHARING.md)
+for setup, access rules, migration/rollback and deployment limitations.
 
 ## Open
 
@@ -68,11 +99,17 @@ File handles and access grants are not persisted or assumed to survive a reload.
 
 ### Image Support
 
-Recognized extensions: JPG, JPEG, PNG, GIF, WebP, AVIF, BMP, HEIC, HEIF, TIF, TIFF, DNG. Recognition does not imply native preview support. **HEIC is 60% of this archive and commonly cannot be decoded in Chromium.** Those files remain listed, searchable, taggable, and favoritable; the viewer identifies unsupported HEIC separately and suggests a HEIC-capable device or a separate JPEG copy. The app never converts or modifies originals, and does not send their bytes anywhere. TIFF/RAW support is likewise browser-dependent. No conversion library or remote conversion service is included.
+Recognized extensions: JPG, JPEG, PNG, GIF, WebP, AVIF, BMP, HEIC, HEIF, TIF, TIFF, DNG. The Windows desktop app decodes HEIC/HEIF locally to an in-memory JPEG preview because Chromium does not consistently support those formats. The source photo is never converted or modified, and photo bytes are not sent anywhere. TIFF/RAW support remains browser-dependent. In a regular browser, HEIC/HEIF preview still depends on browser support.
 
-The viewer cannot recover data from removed, inaccessible, corrupt, or unsupported files. Regrant access if necessary. Unicode and already-garbled export names are preserved exactly.
+HEIC preview uses `heic-convert` (ISC) and `libheif-js` (LGPL-3.0); their license files are included in the packaged application.
+
+The viewer cannot recover data from removed, inaccessible, corrupt, or unsupported files. Failed thumbnails show a neutral "No preview available" placeholder, never a substitute photo. Regrant access if necessary. Unicode and already-garbled export names are preserved exactly.
 
 ## Browsing
+
+Use **Install on Phone** in the top bar to open the existing Wi-Fi companion with a QR code or copyable pairing URL, and see Android/iPhone installation instructions. This reuses the Desktop LAN server; full PWA installation/offline-shell support depends on browser support and trusting its self-signed certificate. See [Wi-Fi setup and installation](docs/WIFI_SYNC.md#install-on-phone).
+
+Click a folder name or its open button to browse it without changing its pin status or position. Folder navigation never automatically pins folders. Use the folder's right-click menu to pin or unpin it explicitly.
 
 - Photos: responsive paginated grid; optional filename overlays, hover/focus filenames, and favorite buttons.
 - Folders: expandable, lazily built tree with inclusive descendant image counts. Choosing a folder includes its descendants. Zero-count directories are retained when the browser exposes them.
@@ -132,7 +169,8 @@ DM Sans and Manrope fonts use Google Fonts when online and fall back to local sa
 
 - At most 72 photo cards in the DOM, regardless of library size. Page navigation replaces the page instead of accumulating cards.
 - The JSON index contains metadata only. localStorage is not used as a per-photo database; users choose when to export/save the index.
-- IntersectionObserver defers preview work until near the viewport. Three preview jobs run concurrently, each with a decode timeout.
+- IntersectionObserver defers preview work until near the viewport. At most three thumbnail jobs run concurrently; queued jobs that leave the viewport or belong to an old grid are dropped, and the scheduler yields between batches so input and scrolling can run.
+- HEIC conversion runs serially in a reusable worker thread, not Electron's main event loop, with a 60-second conversion timeout. Thumbnail decoding/resizing uses asynchronous ImageBitmap APIs where available, releases bitmap memory after use, and draws only the resized image on the UI thread; older browsers retain the image-element fallback.
 - Only visible/near-visible photos are decoded into transient canvases. Cached page thumbnails have a maximum 480px edge; original preview URLs are immediately revoked after thumbnail creation. Thumbnail URLs are revoked on page/filter/root changes and page exit.
 - There are no existing dedicated thumbnails in the inspected layout. Generating the first preview therefore requires decoding that local original; a resized source cannot be obtained without reading it. The app does not eagerly read every full-resolution image. No hashes or image-content classification are calculated.
 - Viewer originals load on demand, with no preloading of the entire collection. URLs are released when slides are destroyed, the viewer closes, access is replaced, or the page exits. PhotoSwipe may retain a small adjacent-slide buffer.
@@ -146,7 +184,7 @@ Tested in the VS Code integrated Chromium browser, opening the application direc
 
 - Page initialization, offline local scripts, and desktop/mobile layouts.
 - Actual JPEG samples `daily/1.jpg`, `daily/2.jpg`, and `Bphone/2021/img/IMG_20211122_110652.jpg`; PNG sample `Iphone/2021/2021__03/IMG_5181.PNG`; HEIC sample `Iphone/106APPLE/IMG_6003.HEIC`.
-- Actual JPEG/PNG decoding and resized previews; HEIC placeholder and viewer error without breaking other navigation.
+- Actual JPEG/PNG decoding and resized previews; HEIC remains browser-dependent.
 - Recursive directory-handle traversal using an in-memory File System Access-compatible handle tree backed by four actual selected JPEG/PNG files. Confirmed nested paths, folder counts, deep-folder filtering, thumbnails, and full-size viewer decoding through the handle-based read path. This exercises traversal and on-demand `getFile()`, but does not grant or test an OS/browser directory permission.
 - Nested path preservation and folder-tree selection, folder/format filtering, filename/path/tag search, tag saving, logical albums, favorites, filename-date/unknown-date grouping, and modification-time ordering.
 - PhotoSwipe CDN loading, image navigation within the filtered list, changing details, Escape, and containment beside/below details.
@@ -167,7 +205,7 @@ The workspace's JavaScript diagnostic provider reports `Unexpected ES6 feature` 
 
 1. Open the page, connect `daily`, and confirm six JPEG photos without modifying originals.
 2. Reconnect the archive root; expand Bphone → 2021 → img and check counts/search against the filesystem.
-3. Filter PNG, then HEIC. Expect PNG previews and browser-dependent HEIC placeholders.
+3. Filter PNG, then HEIC. Expect PNG previews. In the Windows desktop app, HEIC/HEIF files should also preview; the original files remain unchanged.
 4. Compare Filename date and Modified sorts. Timeline must retain Unknown date and never claim capture dates.
 5. Open a JPEG, navigate with arrows, zoom/pan, add two tags and two albums, save, favorite, and close with Escape. Check the corresponding logical views and tag search.
 6. Export the JSON index, reload, reconnect the same root, import the backup, and confirm tags/favorites/albums are restored. The page asks for folder access again after reload.

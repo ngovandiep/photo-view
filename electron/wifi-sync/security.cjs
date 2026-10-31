@@ -29,6 +29,7 @@ function isPrivateAddress(address) {
     const [a, b] = value.split('.').map(Number);
     return a === 10 || a === 127 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254);
   }
+  if (!net.isIPv6(value)) return false;
   const lower = value.toLowerCase();
   return lower === '::1' || lower.startsWith('fe80:') || lower.startsWith('fc') || lower.startsWith('fd');
 }

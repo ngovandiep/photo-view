@@ -60,7 +60,7 @@
 
   function render() {
     const login = mode === 'login';
-    form.querySelector('#auth-title').textContent = login ? 'Sign in to Still' : 'Create your account';
+    form.querySelector('#auth-title').textContent = login ? `Sign in to ${window.AppBrand?.current.shortName || 'MiLeo'}` : 'Create your account';
     submit.textContent = login ? 'Sign in' : 'Create account';
     toggle.textContent = login ? 'No account? Create one' : 'Have an account? Sign in';
     nameLabel.hidden = login;
@@ -68,6 +68,7 @@
     password.autocomplete = login ? 'current-password' : 'new-password';
     message.textContent = '';
   }
+  document.addEventListener('brand:change', () => { if (mode === 'login') form.querySelector('#auth-title').textContent = `Sign in to ${window.AppBrand.current.shortName}`; });
 
   const ROLE_LABELS = { viewer: 'Viewer', editor: 'Editor', admin: 'Admin' };
   function applyPermissions(state) {

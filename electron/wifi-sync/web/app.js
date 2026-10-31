@@ -4,6 +4,8 @@
   const KEY = 'still-wifi-sync';
   const API = '/api/v1';
   const PAGE = 60;
+  let readOnly = false;
+  let albumId = '';
   const state = { creds: null, libraries: [], libraryId: '', kind: '', q: '', favorites: false, selecting: false, folder: '', sel: { items: new Map(), folders: new Map() }, view: localStorage.getItem('still-view') === 'timeline' ? 'timeline' : 'grid', items: [], total: 0, counts: null, loading: false, done: false, token: 0, viewer: -1 };
 
   try { state.creds = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch { state.creds = null; }
@@ -67,7 +69,14 @@
   }
 
   function forget() { localStorage.removeItem(KEY); state.creds = null; showPair(); }
-  const url = (action, item, extra = '') => `${API}/libraries/${state.libraryId}/${action}?path=${encodeURIComponent(item.path)}${extra}`;
+  const albumParam = () => albumId ? `&album=${encodeURIComponent(albumId)}` : '';
+  const url = (action, item, extra = '') => `${API}/libraries/${state.libraryId}/${action}?path=${encodeURIComponent(item.path)}${albumParam()}${extra}`;
+  function showAlbums() {
+    albumId = '';
+    const albums = state.libraries.find(library => library.id === state.libraryId)?.albums || [];
+    $('album-filter').hidden = !readOnly;
+    $('album-select').replaceChildren(...[{ id: '', name: 'All shared albums' }, ...albums].map(album => Object.assign(document.createElement('option'), { value: album.id, textContent: album.name })));
+  }
 
   function showPair(message = '') {
     announce('still:signed-out');
@@ -92,17 +101,23 @@
     try {
       await call('POST', '/session');
       const me = await call('GET', '/me');
-      if (me.loginRequired && !me.loggedIn) { showLogin(); return; }
+      readOnly = Boolean(me.readOnly);
+      $('login-help').textContent = me.familyMode ? 'Use the local account assigned to this device in Desktop Admin → Family & sharing.' : 'Use the account that is signed in on your computer.';
+      if (me.loginRequired && !me.loggedIn) { showLogin(me.profileAssigned === false ? 'Ask Admin to assign an enabled family profile to this device first.' : ''); return; }
       $('library-screen').hidden = false;
       $('logout').hidden = !me.loginRequired;
+      $('send-photos').hidden = me.uploadAllowed === false;
       announce('still:ready', { chat: Boolean(me.chat), creds: state.creds });
       const libs = await call('GET', '/libraries');
       $('account-line').textContent = me.account ? `Signed in as ${me.account.name || me.account.email} · ${me.device.name}` : `Local library · ${me.device.name}`;
       state.libraries = libs.libraries;
+      $('select-toggle').hidden = readOnly;
+      $('viewer-fav').hidden = readOnly;
       const saved = localStorage.getItem('still-library');
       state.libraryId = state.libraries.find(l => l.id === saved)?.id || state.libraries[0]?.id || '';
       $('library-select').replaceChildren(...state.libraries.map(l => Object.assign(document.createElement('option'), { value: l.id, textContent: `${l.name} (${l.count})`, selected: l.id === state.libraryId })));
-      if (!state.libraryId) { $('status').textContent = 'No library on the computer yet. Add a folder in the desktop app.'; return; }
+      showAlbums();
+      if (!state.libraryId) { $('grid').replaceChildren(); $('roadmap').replaceChildren(); $('folders').replaceChildren(); $('status').textContent = readOnly ? 'No albums shared with your profile yet. Ask Admin to grant access.' : 'No library on the computer yet. Add a folder in the desktop app.'; return; }
       const go = sessionStorage.getItem('still-go'); sessionStorage.removeItem('still-go');
       if (go) { state.favorites = go === 'favorites'; state.folder = ''; state.view = go === 'timeline' ? 'timeline' : go === 'folders' ? 'folders' : 'grid'; }
       reload();
@@ -121,14 +136,14 @@
   async function loadFolders() {
     const token = state.token;
     try {
-      const data = await call('GET', `/libraries/${state.libraryId}/folders?parent=${encodeURIComponent(state.folder)}`);
+      const data = await call('GET', `/libraries/${state.libraryId}/folders?parent=${encodeURIComponent(state.folder)}${albumParam()}`);
       if (token !== state.token) return;
       const crumbs = document.createElement('nav'); crumbs.className = 'crumbs'; crumbs.setAttribute('aria-label', 'Folder path');
       const parts = state.folder ? state.folder.split('/') : [];
       const addCrumb = (label, target, last) => {
         if (crumbs.childNodes.length) crumbs.append('›');
         if (last) { crumbs.append(Object.assign(document.createElement('span'), { className: 'here', textContent: label })); return; }
-        const button = Object.assign(document.createElement('button'), { type: 'button', textContent: label });
+        const button = Object.assign(document.createElement('button'), { type: 'button', textContent: label, title: label });
         button.addEventListener('click', () => goToFolder(target));
         crumbs.append(button);
       };
@@ -142,7 +157,7 @@
   }
 
   function folderCard(folder) {
-    const card = document.createElement('button'); card.type = 'button'; card.className = 'folder-card'; card._folder = folder;
+    const card = document.createElement('button'); card.type = 'button'; card.className = 'folder-card'; card._folder = folder; card.title = folder.name;
     card.append(Object.assign(document.createElement('b'), { textContent: `📁 ${folder.name}` }), Object.assign(document.createElement('small'), { textContent: `${folder.count} item${folder.count === 1 ? '' : 's'}` }));
     if (state.sel.folders.has(folder.path)) card.classList.add('selected');
     card.addEventListener('click', () => { if (state.selecting) toggleFolder(folder, card); else enterFolder(folder.path); });
@@ -170,6 +185,7 @@
   }
   const selectClose = () => applySelecting(false);
   function setSelecting(on) {
+    if (on && readOnly) return;
     if (on === state.selecting) return;
     if (on) { applySelecting(true); pushLayer(selectClose); } else dismissLayer(selectClose);
   }
@@ -231,6 +247,7 @@
 
   function filterParams() {
     const params = new URLSearchParams();
+    if (albumId) params.set('album', albumId);
     if (state.kind) params.set('kind', state.kind);
     if (state.q) params.set('q', state.q);
     if (state.favorites) params.set('favorite', '1');
@@ -305,6 +322,7 @@
     $('status').textContent = 'Loading…';
     try {
       const params = new URLSearchParams({ offset: String(state.items.length), limit: String(PAGE) });
+      if (albumId) params.set('album', albumId);
       if (state.view === 'folders') params.set('folder', state.folder);
       if (state.kind) params.set('kind', state.kind);
       if (state.q) params.set('q', state.q);
@@ -363,7 +381,8 @@
     state.viewer = index; $('viewer').hidden = false; document.body.style.overflow = 'hidden';
     $('viewer-title').textContent = item.name;
     setFavoriteButton(item.favorite);
-    const stage = $('viewer-stage'); stage.replaceChildren();
+    const stage = $('viewer-stage'); stage.replaceChildren(); resetZoom();
+    stage.style.touchAction = item.kind === 'photo' ? 'none' : '';
     if (item.kind === 'photo') {
       const img = document.createElement('img'); img.alt = item.name;
       img.onerror = () => {
@@ -380,12 +399,13 @@
     $('viewer-prev').hidden = index === 0; $('viewer-next').hidden = index >= state.total - 1;
     if (index >= state.items.length - 5) loadMore();
   }
-  function closeViewerNow() { $('viewer').hidden = true; $('viewer-stage').replaceChildren(); document.body.style.overflow = ''; state.viewer = -1; }
+  function closeViewerNow() { $('viewer').hidden = true; $('viewer-stage').replaceChildren(); resetZoom(); document.body.style.overflow = ''; state.viewer = -1; }
   function closeViewer() { dismissLayer(closeViewerNow); }
   function step(offset) { state.dir = offset < 0 ? -1 : 1; const next = state.viewer + offset; if (next >= 0 && next < state.items.length) openViewer(next); }
   function setFavoriteButton(on) { $('viewer-fav').textContent = on ? '♥' : '♡'; $('viewer-fav').setAttribute('aria-pressed', String(on)); }
 
   async function toggleFavorite() {
+    if (readOnly) return;
     const item = state.items[state.viewer]; if (!item) return;
     const next = !item.favorite; setFavoriteButton(next);
     try {
@@ -427,31 +447,118 @@
     if ($('viewer').hidden) return;
     if (event.key === 'Escape') closeViewer(); else if (event.key === 'ArrowLeft') step(-1); else if (event.key === 'ArrowRight') step(1);
   });
-  let touch = null;
+  // Viewer gestures: swipe between items; pinch, double-tap and drag to zoom photos.
   const stage = $('viewer-stage');
+  const MAX_ZOOM = 5; const DOUBLE_TAP_ZOOM = 2.5;
+  let zoom = { s: 1, x: 0, y: 0 };
+  let touch = null;
+  let lastTap = { time: 0, x: 0, y: 0 };
+  let lastTouchAt = 0;
+  const zoomTarget = () => { const child = stage.firstElementChild; return child && child.tagName === 'IMG' ? child : null; };
+  const distance = (a, b) => Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+  const midpoint = (a, b) => ({ x: (a.clientX + b.clientX) / 2, y: (a.clientY + b.clientY) / 2 });
+  function stageCenter() { const r = stage.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2, w: r.width, h: r.height }; }
+  function applyZoom(next) {
+    const img = zoomTarget(); if (!img) return;
+    const c = stageCenter();
+    const s = Math.min(MAX_ZOOM, Math.max(1, next.s));
+    // Keep the photo covering the screen: allow panning only as far as the enlarged edges reach.
+    const limitX = Math.max(0, (img.offsetWidth * s - c.w) / 2); const limitY = Math.max(0, (img.offsetHeight * s - c.h) / 2);
+    zoom = s === 1 ? { s: 1, x: 0, y: 0 } : { s, x: Math.min(limitX, Math.max(-limitX, next.x)), y: Math.min(limitY, Math.max(-limitY, next.y)) };
+    img.style.transform = zoom.s === 1 ? '' : `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.s})`;
+    stage.classList.toggle('zoomed', zoom.s > 1);
+  }
+  // Zoom to scale s while keeping the photo point under `from` (screen coords at the start) under `to`.
+  function zoomAround(start, s, from, to) {
+    const c = stageCenter();
+    applyZoom({ s, x: to.x - c.x - s * (from.x - c.x - start.x) / start.s, y: to.y - c.y - s * (from.y - c.y - start.y) / start.s });
+  }
+  function resetZoom() { zoom = { s: 1, x: 0, y: 0 }; stage.classList.remove('zoomed', 'dragging'); }
+
   stage.addEventListener('touchstart', event => {
+    lastTouchAt = Date.now();
     // Leave the bottom strip of a video to its native seek bar.
     const rect = stage.getBoundingClientRect();
     const onControls = event.target.tagName === 'VIDEO' && event.touches[0].clientY > rect.bottom - 90;
-    touch = event.touches.length === 1 && !onControls ? { x: event.touches[0].clientX, y: event.touches[0].clientY, dx: 0, active: false } : null;
+    if (onControls) { touch = null; return; }
+    const [a, b] = event.touches;
+    if (b && zoomTarget()) {
+      touch = { mode: 'pinch', start: { ...zoom }, dist: distance(a, b) || 1, mid: midpoint(a, b) };
+      stage.classList.add('dragging');
+    } else if (event.touches.length === 1) {
+      touch = { mode: zoom.s > 1 ? 'pan' : 'swipe', x: a.clientX, y: a.clientY, dx: 0, active: false, start: { ...zoom }, moved: false };
+      if (touch.mode === 'pan') stage.classList.add('dragging');
+    } else touch = null;
   }, { passive: true });
+
   stage.addEventListener('touchmove', event => {
     if (!touch) return;
-    if (event.touches.length !== 1) { touch = null; return; }
-    const dx = event.touches[0].clientX - touch.x; const dy = event.touches[0].clientY - touch.y;
+    const [a, b] = event.touches;
+    if (touch.mode === 'pinch') {
+      if (!b) return;
+      event.preventDefault();
+      zoomAround(touch.start, touch.start.s * distance(a, b) / touch.dist, touch.mid, midpoint(a, b));
+      return;
+    }
+    if (b) return;
+    const dx = a.clientX - touch.x; const dy = a.clientY - touch.y;
+    if (Math.abs(dx) > 8 || Math.abs(dy) > 8) touch.moved = true;
+    if (touch.mode === 'pan') {
+      event.preventDefault();
+      applyZoom({ s: touch.start.s, x: touch.start.x + dx, y: touch.start.y + dy });
+      return;
+    }
     if (!touch.active && Math.abs(dx) > 12 && Math.abs(dx) > Math.abs(dy) * 1.5) { touch.active = true; stage.classList.add('dragging'); }
     if (!touch.active) return;
+    event.preventDefault();
     touch.dx = dx;
     const child = stage.firstElementChild; if (child) child.style.transform = `translateX(${dx}px)`;
-  }, { passive: true });
-  stage.addEventListener('touchend', () => {
+  }, { passive: false });
+
+  stage.addEventListener('touchend', event => {
     if (!touch) return;
-    const { dx, active } = touch; touch = null; stage.classList.remove('dragging');
+    if (touch.mode === 'pinch') {
+      // Lifting one finger of a pinch continues as a pan with the remaining finger.
+      const rest = event.touches[0];
+      touch = rest && zoom.s > 1 ? { mode: 'pan', x: rest.clientX, y: rest.clientY, start: { ...zoom }, moved: true } : null;
+      if (!touch) stage.classList.remove('dragging');
+      if (zoom.s < 1.05) applyZoom({ s: 1 });
+      return;
+    }
+    if (event.touches.length) return;
+    const { mode, dx, active, moved, x, y } = touch; touch = null; stage.classList.remove('dragging');
+    if (!moved && zoomTarget()) {
+      const now = Date.now();
+      if (now - lastTap.time < 300 && Math.hypot(x - lastTap.x, y - lastTap.y) < 30) {
+        lastTap.time = 0;
+        if (zoom.s > 1) applyZoom({ s: 1 });
+        else zoomAround({ s: 1, x: 0, y: 0 }, DOUBLE_TAP_ZOOM, { x, y }, { x, y });
+        return;
+      }
+      lastTap = { time: now, x, y };
+    }
+    if (mode !== 'swipe') return;
     const child = stage.firstElementChild;
     if (active && Math.abs(dx) > 70 && ((dx < 0 && state.viewer < state.total - 1) || (dx > 0 && state.viewer > 0))) step(dx < 0 ? 1 : -1);
     else if (child) child.style.transform = '';
   });
-  stage.addEventListener('touchcancel', () => { touch = null; stage.classList.remove('dragging'); const child = stage.firstElementChild; if (child) child.style.transform = ''; });
+  stage.addEventListener('touchcancel', () => {
+    const wasSwipe = touch?.mode === 'swipe'; touch = null; stage.classList.remove('dragging');
+    const child = stage.firstElementChild; if (wasSwipe && child) child.style.transform = '';
+  });
+  // Stop iOS Safari from zooming the whole page instead of the photo.
+  for (const type of ['gesturestart', 'gesturechange']) stage.addEventListener(type, event => event.preventDefault(), { passive: false });
+  stage.addEventListener('wheel', event => {
+    if (!event.ctrlKey || !zoomTarget()) return;
+    event.preventDefault();
+    const point = { x: event.clientX, y: event.clientY };
+    zoomAround({ ...zoom }, zoom.s * Math.exp(-event.deltaY / 200), point, point);
+  }, { passive: false });
+  stage.addEventListener('dblclick', event => {
+    if (!zoomTarget() || Date.now() - lastTouchAt < 1000) return;
+    const point = { x: event.clientX, y: event.clientY };
+    if (zoom.s > 1) applyZoom({ s: 1 }); else zoomAround({ s: 1, x: 0, y: 0 }, DOUBLE_TAP_ZOOM, point, point);
+  });
   $('login-form').addEventListener('submit', login);
   $('logout').addEventListener('click', async () => { try { await call('POST', '/logout'); } catch { /* ignore */ } showLogin(); });
   $('bottom-nav').addEventListener('click', event => {
@@ -468,7 +575,8 @@
     reload();
   });
   $('menu').addEventListener('click', () => setMenu($('menu-panel').hidden));
-  $('library-select').addEventListener('change', () => { unwindLayers('folder'); state.libraryId = $('library-select').value; state.folder = ''; localStorage.setItem('still-library', state.libraryId); reload(); });
+  $('library-select').addEventListener('change', () => { unwindLayers('folder'); state.libraryId = $('library-select').value; state.folder = ''; showAlbums(); localStorage.setItem('still-library', state.libraryId); reload(); });
+  $('album-select').addEventListener('change', () => { unwindLayers('folder'); albumId = $('album-select').value; state.folder = ''; reload(); });
   let searchTimer = 0;
   $('search').addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => { state.q = $('search').value.trim(); reload(); }, 300); });
   $('unpair').addEventListener('click', async () => { try { await call('DELETE', '/device'); await call('DELETE', '/session').catch(() => {}); } catch { /* already unpaired */ } forget(); });

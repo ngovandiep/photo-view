@@ -10,6 +10,14 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { fileURLToPath } = require('node:url');
 const indexStore = require('../index-store.js');
+const { convertHeicPreview } = require('./photo-preview.cjs');
+const { createBrandingStore } = require('./branding.cjs');
+const { createBackup, processPendingRestore, captureMetadata, reconcileIndex, retireThumbnails } = require('./backup.cjs');
+
+// The product was renamed to MiLeo Photo Library; keep the original data folder so existing libraries,
+// accounts, Wi-Fi pairings and encrypted secrets stay available after the upgrade.
+app.setPath('userData', path.join(app.getPath('appData'), 'Still Photo Library'));
+const branding = createBrandingStore({ file: path.join(app.getPath('userData'), 'branding.json') });
 
 const imageExtensions = new Set(['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'avif', 'heic', 'heif', 'tif', 'tiff', 'dng']);
 const videoExtensions = new Set(['mp4', 'm4v', 'mov', 'webm', 'mkv', 'ogv', 'avi', '3gp']);
@@ -20,6 +28,29 @@ const maxIndexBytes = 100 * 1024 * 1024;
 const maxPhotoBytes = 512 * 1024 * 1024;
 const maxIndexedFiles = 500000;
 let mainWindow;
+let syncService;
+let backupService;
+let libraryMaintenance = false;
+const libraryWriters = new Set();
+function libraryWrite(work) {
+  if (libraryMaintenance) return Promise.reject(new Error('Library maintenance is in progress. Try again when the recovery job finishes.'));
+  const pending = Promise.resolve().then(work);
+  libraryWriters.add(pending);
+  pending.then(() => libraryWriters.delete(pending), () => libraryWriters.delete(pending));
+  return pending;
+}
+async function maintainLibrary(work) {
+  if (libraryMaintenance) throw new Error('Library maintenance is already running.');
+  if (!syncService || syncService.status().running) throw new Error('Pause receiving in Upload queue before backup or index recovery.');
+  libraryMaintenance = true;
+  try {
+    await Promise.all([...libraryWriters]);
+    if (syncService.repo.db.prepare('SELECT id FROM assets').all().some(row => syncService.importer.isActive(row.id) || syncService.importer.isVerifying(row.id))) {
+      throw new Error('An upload is still finishing. Wait before starting maintenance.');
+    }
+    return await work();
+  } finally { libraryMaintenance = false; }
+}
 
 function dataDirectory() { return path.join(app.getPath('userData'), 'photo-library'); }
 function manifestPath() { return path.join(dataDirectory(), 'libraries.json'); }
@@ -101,7 +132,8 @@ async function libraryStatus(library) {
   }
 }
 
-async function registerFolders(paths) {
+function registerFolders(paths) { return libraryWrite(() => registerFoldersWork(paths)); }
+async function registerFoldersWork(paths) {
   const manifest = await readManifest();
   const entries = new Map(manifest.libraries.map(library => [library.id, library]));
   const registered = [];
@@ -137,7 +169,8 @@ async function readIndex(libraryId) {
   }
 }
 
-async function saveIndex(libraryId, candidate) {
+function saveIndex(libraryId, candidate) { return libraryWrite(() => saveIndexWork(libraryId, candidate)); }
+async function saveIndexWork(libraryId, candidate) {
   const library = await registeredLibrary(libraryId);
   const validation = indexStore.validate(candidate);
   if (!validation.ok) throw new Error(`Index validation failed: ${validation.error}`);
@@ -171,7 +204,8 @@ async function backupLegacyMetadata(libraryId, legacy) {
   return destination;
 }
 
-async function scanLibrary(event, libraryId, requestId) {
+function scanLibrary(event, libraryId, requestId) { return libraryWrite(() => scanLibraryWork(event, libraryId, requestId)); }
+async function scanLibraryWork(event, libraryId, requestId) {
   const library = await registeredLibrary(libraryId);
   let root;
   try { root = await fs.realpath(library.path); }
@@ -251,6 +285,12 @@ async function readPhoto(libraryId, relativePath) {
   return new Uint8Array(await fs.readFile(resolvedFile));
 }
 
+async function readPhotoPreview(libraryId, relativePath) {
+  const bytes = await readPhoto(libraryId, relativePath);
+  const extension = path.extname(relativePath).slice(1).toLowerCase();
+  return extension === 'heic' || extension === 'heif' ? convertHeicPreview(Buffer.from(bytes)) : bytes;
+}
+
 // Streams a registered library's video with HTTP range support so large files seek without loading into memory.
 async function handleMediaRequest(request) {
   try {
@@ -298,7 +338,8 @@ async function renameWithRetry(from, to) {
   }
 }
 
-async function moveFolder(libraryId, fromRelative, toRelative) {
+function moveFolder(libraryId, fromRelative, toRelative) { return libraryWrite(() => moveFolderWork(libraryId, fromRelative, toRelative)); }
+async function moveFolderWork(libraryId, fromRelative, toRelative) {
   const library = await registeredLibrary(libraryId);
   const from = indexStore.normalizePath(fromRelative);
   const to = indexStore.normalizePath(toRelative);
@@ -317,7 +358,7 @@ async function moveFolder(libraryId, fromRelative, toRelative) {
   const { index } = indexStore.moveFolder(await readIndex(libraryId), from, to);
   await renameWithRetry(sourceReal, target);
   try {
-    await saveIndex(libraryId, index);
+    await saveIndexWork(libraryId, index);
   } catch (error) {
     await renameWithRetry(target, sourceReal).catch(() => {});
     throw error;
@@ -396,13 +437,30 @@ function registerIpc() {
     return true;
   });
   ipcMain.handle('photo:read', (_event, libraryId, relativePath) => readPhoto(libraryId, relativePath));
+  ipcMain.handle('photo:preview', (_event, libraryId, relativePath) => readPhotoPreview(libraryId, relativePath));
   ipcMain.handle('window:toggle-fullscreen', () => { if (mainWindow) mainWindow.setFullScreen(!mainWindow.isFullScreen()); return !!mainWindow?.isFullScreen(); });
   ipcMain.handle('window:is-fullscreen', () => !!mainWindow?.isFullScreen());
+  ipcMain.handle('branding:get', () => branding.get());
+}
+
+function brandingChanged() {
+  const value = branding.get();
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed()) continue;
+    win.setTitle(value.appName);
+    win.webContents.send('branding:changed', value);
+  }
+}
+
+// Only the website configured in Branding may leave the app, and it opens in the system browser.
+function openBrandWebsite(target) {
+  const site = branding.get().websiteUrl;
+  if (site && target === site) require('electron').shell.openExternal(site).catch(() => {});
 }
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    title: 'Still Photo Library',
+    title: branding.get().appName,
     width: 1440,
     height: 940,
     minWidth: 860,
@@ -426,13 +484,15 @@ function createWindow() {
       if (!localPath || !isInside(applicationRoot, localPath)) event.preventDefault();
     } catch { event.preventDefault(); }
   });
-  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => { openBrandWebsite(url); return { action: 'deny' }; });
+  // Keep the configured name instead of the page <title> while the renderer is loading.
+  mainWindow.on('page-title-updated', event => { event.preventDefault(); mainWindow.setTitle(branding.get().appName); });
   mainWindow.webContents.on('will-attach-webview', event => event.preventDefault());
   mainWindow.once('ready-to-show', () => mainWindow.show());
   mainWindow.webContents.on('did-fail-load', (_event, code, description) => {
-    if (code !== -3) dialog.showErrorBox('Still could not load', `${description} (${code})`);
+    if (code !== -3) dialog.showErrorBox(`${branding.get().appName} could not load`, `${description} (${code})`);
   });
-  mainWindow.loadFile(path.join(applicationRoot, 'index.html')).catch(error => dialog.showErrorBox('Still could not start', error.message));
+  mainWindow.loadFile(path.join(applicationRoot, 'index.html')).catch(error => dialog.showErrorBox(`${branding.get().appName} could not start`, error.message));
   mainWindow.on('closed', () => { mainWindow = null; });
 }
 
@@ -490,7 +550,14 @@ const hasInstance = app.requestSingleInstanceLock();
 if (!hasInstance) app.quit();
 else {
   app.on('second-instance', () => { if (mainWindow) { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.focus(); } });
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
+    if ((process.env.DB_PATH || process.env.STILL_API_URL || process.env.JWT_SECRET) && await fs.access(path.join(app.getPath('userData'), 'recovery', 'restore.json')).then(() => true, error => { if (error.code === 'ENOENT') return false; throw error; })) {
+      throw new Error('A restore is pending. Remove DB_PATH, STILL_API_URL and JWT_SECRET overrides before starting MiLeo so local database recovery and session invalidation can be completed safely.');
+    }
+    const recovery = await processPendingRestore(app.getPath('userData'));
+    if (recovery?.failed || recovery?.rolledBack) {
+      dialog.showErrorBox('MiLeo recovery report', recovery.error || 'An interrupted restore was rolled back. Review Backup & Recovery before retrying.');
+    }
     if (process.platform === 'win32') app.setAppUserModelId('com.still.photolibrary');
     const { session } = require('electron');
     session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
@@ -506,8 +573,67 @@ else {
         save: saveIndex
       }
     });
-    const userChat = require('./chat-client.cjs').register({ ipcMain, auth: { ...authApi.chatContext }, BrowserWindow, Notification: require('electron').Notification });
-    require('./wifi-sync/ipc.cjs').register({
+    const userChat = require('./chat-client.cjs').register({ ipcMain, auth: { ...authApi.chatContext }, BrowserWindow, Notification: require('electron').Notification, appName: () => branding.get().appName });
+    backupService = createBackup({
+      userData: app.getPath('userData'),
+      listLibraries: async () => (await readManifest()).libraries,
+      readIndex,
+      syncAssets: libraryId => syncService.db.prepare("SELECT library_path AS path, size, sha256 FROM assets WHERE library_id = ? AND library_path IS NOT NULL AND sha256 IS NOT NULL AND stored_at IS NOT NULL").all(libraryId),
+      emit: result => {
+        if (result instanceof Error) {
+          console.error('Recovery job could not be saved:', result.message);
+          dialog.showErrorBox('MiLeo backup or recovery failed', `The job result could not be saved: ${result.message}. Review the backup destination before retrying.`);
+        }
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          if (result?.kind === 'rebuild') {
+            if (result.state === 'failed') dialog.showErrorBox('MiLeo index recovery failed', `${result.error}\n\nReview the recovery report. Completed per-library changes and previous index copies were retained.`);
+            mainWindow.webContents.reload();
+          }
+          else mainWindow.webContents.send('wifi-sync:event', { type: 'recovery-job' });
+        }
+      },
+      capture: (destination, options) => maintainLibrary(async () => {
+        if (process.env.DB_PATH || process.env.STILL_API_URL || process.env.JWT_SECRET || !accountDb) throw new Error('M4 snapshots require the embedded account database and signing secret at their default locations. External account databases and secret overrides are not supported.');
+        const libraries = (await readManifest()).libraries;
+        await writeJsonAtomic(manifestPath(), { ...(await readManifest()), libraries });
+        const scans = {};
+        for (const library of libraries) {
+          if (options.originals) scans[library.id] = await scanLibraryWork({ sender: { send() {} } }, library.id, 'backup');
+          await writeJsonAtomic(indexPath(library.id), await readIndex(library.id));
+        }
+        // All application-side JSON writers are drained. Synchronous snapshots prevent
+        // account and sync callbacks from interleaving between the metadata copies.
+        captureMetadata(app.getPath('userData'), destination, {
+          'wifi-sync/wifi-sync.db': syncService.db,
+          'account-server/still.db': accountDb
+        });
+        return { libraries, scans };
+      }),
+      rebuild: () => maintainLibrary(async () => {
+        const report = [];
+        for (const library of (await readManifest()).libraries) {
+          await backupExistingIndex(library.id);
+          let previous;
+          let damagedIndex = false;
+          try { previous = await readIndex(library.id); }
+          catch (error) {
+            damagedIndex = true;
+            previous = indexStore.create(library.name);
+            report.push({ library: library.name, status: 'damaged_index_preserved', message: `Previous index retained in photo-library/backups. Its unreadable annotations cannot be merged: ${error.message}` });
+          }
+          const scan = await scanLibraryWork({ sender: { send() {} } }, library.id, 'recovery');
+          if (damagedIndex && scan.errors.length) throw new Error(`Cannot replace the damaged index for ${library.name} with an incomplete scan. Previous index was retained.`);
+          const result = reconcileIndex(previous, scan);
+          await saveIndexWork(library.id, result.index);
+          report.push({ library: library.name, status: scan.errors.length ? 'partial' : 'reconciled', ...result.summary, errors: scan.errors });
+        }
+        await retireThumbnails(app.getPath('userData'), (await readManifest()).libraries);
+        report.push({ status: 'cache_reset', message: 'Thumbnail cache retired; previews regenerate on demand. Reload the library to clear in-memory previews.' });
+        return report;
+      })
+    });
+    await backupService.init();
+    syncService = require('./wifi-sync/ipc.cjs').register({
       app,
       ipcMain,
       safeStorage: require('electron').safeStorage,
@@ -524,12 +650,15 @@ else {
       createAccountUser,
       setAccountUserRole,
       getChat: () => accountChat,
-      userChat
+      userChat,
+      branding,
+      backup: backupService,
+      onBrandingChanged: brandingChanged
     });
-    startAccountServer().catch(error => console.error('Account server did not start:', error.message));
+    await startAccountServer().catch(error => console.error('Account server did not start:', error.message));
     createWindow();
   }).catch(error => {
-    dialog.showErrorBox('Still could not start', error.message);
+    dialog.showErrorBox(`${branding.get().appName} could not start`, error.message);
     app.quit();
   });
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });

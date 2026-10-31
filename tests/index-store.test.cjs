@@ -23,6 +23,19 @@ test('retains entries below inaccessible folders without marking them missing', 
   assert.equal(result.summary.protected, 1);
 });
 
+test('refreshing changed file metadata invalidates its cached checksum', () => {
+  const index = store.addPhoto(store.create('Photos'), { path: 'a.jpg', size: 10, lastModified: 20 }, 'a'.repeat(64));
+  const changed = store.addPhoto(index, { path: 'a.jpg', size: 11, lastModified: 21 });
+  assert.equal(changed.entries[0].contentHash, null);
+});
+
+test('addPhoto preserves an existing capture date unless a new one is supplied', () => {
+  const dateTaken = '2024-01-02T00:00:00.000Z';
+  const first = store.addPhoto(store.create('Photos'), { path: 'a.jpg', size: 10, lastModified: 20, dateTaken });
+  const refreshed = store.addPhoto(first, { path: 'a.jpg', size: 10, lastModified: 20 });
+  assert.equal(refreshed.entries[0].dateTaken, dateTaken);
+});
+
 test('rejects invalid index paths and accepts a normalized valid index', () => {
   const index = store.reconcile(store.create('Photos'), [{ path: 'a.jpg', size: 10, lastModified: 20 }]).index;
   assert.equal(store.validate(index).ok, true);

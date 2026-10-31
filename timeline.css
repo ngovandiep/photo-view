@@ -12,12 +12,12 @@
 .roadmap-month { position: relative; width: calc(50% - 34px); margin-bottom: 26px; padding: 14px; border: 1px solid #dbe3d9; border-radius: 14px; background: var(--surface, #fff); box-shadow: 0 6px 20px #2433241a; }
 .roadmap-month.left { margin-right: auto; }
 .roadmap-month.right { margin-left: auto; }
-.roadmap-month::before { content: ''; position: absolute; top: 22px; width: 14px; height: 14px; border: 3px solid #32654c; border-radius: 50%; background: #fff; }
+.roadmap-month::before { content: ''; position: absolute; z-index: 2; top: 22px; width: 14px; height: 14px; border: 3px solid #32654c; border-radius: 50%; background: #fff; }
 .roadmap-month.left::before { right: -42px; }
 .roadmap-month.right::before { left: -42px; }
-.roadmap-month::after { content: ''; position: absolute; top: 28px; width: 27px; height: 3px; background: #a9c3b3; }
-.roadmap-month.left::after { right: -27px; }
-.roadmap-month.right::after { left: -27px; }
+.roadmap-month::after { content: ''; position: absolute; z-index: 1; top: 29px; width: 35px; height: 3px; transform: translateY(-50%); background: #a9c3b3; }
+.roadmap-month.left::after { right: -35px; }
+.roadmap-month.right::after { left: -35px; }
 .roadmap-month.expanded { width: 100%; }
 .roadmap-month.expanded::before, .roadmap-month.expanded::after { display: none; }
 
@@ -36,5 +36,5 @@
   .year-marker { margin-left: 0; }
   .roadmap-month, .roadmap-month.expanded { width: calc(100% - 40px); margin-left: 40px; margin-right: 0; }
   .roadmap-month.left::before, .roadmap-month.right::before { left: -36px; right: auto; }
-  .roadmap-month.left::after, .roadmap-month.right::after { left: -22px; right: auto; width: 22px; }
+  .roadmap-month.left::after, .roadmap-month.right::after { left: -29px; right: auto; width: 29px; }
 }

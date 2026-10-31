@@ -41,9 +41,9 @@
       extension,
       size: Number.isFinite(photo.size) && photo.size >= 0 ? photo.size : null,
       lastModified: Number.isFinite(photo.lastModified) && photo.lastModified >= 0 ? photo.lastModified : null,
-      dateTaken: previous?.dateTaken ?? null,
+      dateTaken: photo.dateTaken ?? previous?.dateTaken ?? null,
       metadata: metadataCopy(previous?.metadata),
-      contentHash: previous?.contentHash ?? null,
+      contentHash: previous && previous.size === photo.size && previous.lastModified === photo.lastModified ? previous.contentHash ?? null : null,
       firstIndexedAt: previous?.firstIndexedAt || firstIndexedAt || now(),
       missing: false,
       missingSince: null
@@ -94,7 +94,7 @@
 
   function validate(raw) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, error: 'Index must be a JSON object.' };
-    if (raw.format !== FORMAT) return { ok: false, error: 'This file is not a Still photo index.' };
+    if (raw.format !== FORMAT) return { ok: false, error: 'This file is not a MiLeo Photo Library index.' };
     if (raw.version !== VERSION) return { ok: false, error: `Unsupported index version: ${String(raw.version)}. This app supports version ${VERSION}.` };
     if (typeof raw.root !== 'string' || raw.root.length > 1024 || !Array.isArray(raw.entries) || !Array.isArray(raw.albums)) return { ok: false, error: 'Index structure is incomplete or invalid.' };
     if (raw.entries.length > 500000 || raw.albums.length > 50000) return { ok: false, error: 'Index exceeds supported entry limits.' };
@@ -189,7 +189,7 @@
   function addPhoto(index, photo, contentHash = null) {
     const id = normalizePath(photo.path);
     const previous = index.entries.find(entry => entry.id === id);
-    const entry = createRecord(photo, previous, now());
+    const entry = createRecord({ ...photo, dateTaken: photo.dateTaken ?? previous?.dateTaken ?? null }, previous, now());
     if (contentHash) entry.contentHash = contentHash;
     const entries = previous ? index.entries.map(item => (item.id === id ? entry : item)) : [...index.entries, entry];
     return { ...index, updatedAt: now(), entries };

@@ -59,7 +59,11 @@
         while (offset < file.size) {
           const end = Math.min(offset + CHUNK, file.size);
           const response = await call('PUT', `/assets/${asset.id}/content`, { raw: file.slice(offset, end), headers: { 'Upload-Offset': String(offset) } });
-          if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error?.message || `HTTP ${response.status}`);
+          if (!response.ok) {
+            const message = (await response.json().catch(() => ({}))).error?.message || `HTTP ${response.status}`;
+            if (response.status === 401 || response.status === 403) { row.textContent = message; return; }
+            throw new Error(message);
+          }
           offset = end;
           row.textContent = `${Math.round((offset / file.size) * 100)}%`;
         }
@@ -114,7 +118,7 @@
     $('send').disabled = true;
     try {
       const sessionResponse = await call('POST', '/sessions', { headers: { 'Idempotency-Key': uuid() } });
-      if (!sessionResponse.ok) throw new Error('Could not start a session. Pair again?');
+      if (!sessionResponse.ok) throw new Error((await sessionResponse.json()).error?.message || 'Could not start a session.');
       const session = await sessionResponse.json();
       const rows = new Map();
       $('list').replaceChildren();
@@ -129,9 +133,11 @@
       }
       for (let start = 0; start < entries.length; start += 100) {
         const batch = entries.slice(start, start + 100);
-        const registered = await (await call('POST', `/sessions/${session.id}/assets`, {
+        const registration = await call('POST', `/sessions/${session.id}/assets`, {
           body: { assets: batch.map(({ file, folder }) => ({ sourceAssetId: sourceId(file, folder), filename: file.name, folderPath: folder, mediaType: file.type || 'application/octet-stream', size: file.size, capturedAt: file.lastModified })) }
-        })).json();
+        });
+        const registered = await registration.json();
+        if (!registration.ok) throw new Error(registered.error?.message || 'Could not register upload jobs.');
         for (const [position, result] of registered.assets.entries()) {
           const entry = batch[position];
           const row = rows.get(sourceId(entry.file, entry.folder));

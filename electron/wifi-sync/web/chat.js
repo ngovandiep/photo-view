@@ -64,7 +64,7 @@
     badge.textContent = total > 99 ? '99+' : String(total);
     notesBadge.hidden = !state.unread.notifications;
     notesBadge.textContent = String(state.unread.notifications);
-    document.title = total ? `(${total}) Still` : 'Still';
+    const name = window.PhoneBrand?.current.syncName || 'MiLeo Sync'; document.title = total ? `(${total}) ${name}` : name;
     try { if (total) navigator.setAppBadge?.(total); else navigator.clearAppBadge?.(); } catch { /* not supported */ }
   }
 

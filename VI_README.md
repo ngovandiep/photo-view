@@ -1,14 +1,16 @@
-# Hướng dẫn Still Photo Library
+# Hướng dẫn MiLeo Photo Library
+
+*Your memories. Your library. Your world.* MiLeo được đặt theo tên hai con trai Mike (Minh Khang) và Leo (Quang Đăng). Ứng dụng đồng bộ trên điện thoại là **MiLeo Sync**.
 
 ## Cài đặt trên Windows
 
-Tải và chạy `Still-Photo-Library-Setup-1.0.0-x64.exe`. Bộ cài đặt dùng phạm vi tài khoản Windows hiện tại; có thể chọn thư mục cài đặt và tạo lối tắt Desktop hoặc Start Menu. Không cần cài Node.js để sử dụng ứng dụng.
+Tải và chạy `MiLeo-Photo-Library-Setup-1.0.0-x64.exe` (các bản cũ có tên `Still-Photo-Library-Setup-…`). Bộ cài đặt dùng phạm vi tài khoản Windows hiện tại; có thể chọn thư mục cài đặt và tạo lối tắt Desktop hoặc Start Menu. Không cần cài Node.js để sử dụng ứng dụng.
 
 Ứng dụng chưa được ký bằng chứng thư nhà phát hành. Windows SmartScreen có thể hiện cảnh báo khi mở bộ cài: chỉ tiếp tục nếu bộ cài đến từ nguồn bạn tin cậy. Việc ký mã và phân phối qua nhà phát hành đáng tin cậy sẽ giảm cảnh báo này.
 
 ## Lần đầu mở ứng dụng
 
-1. Mở **Still Photo Library** từ Start Menu hoặc lối tắt Desktop.
+1. Mở **MiLeo Photo Library** từ Start Menu hoặc lối tắt Desktop.
 2. Chọn **Open folder** và chọn một hoặc nhiều thư mục ảnh, ví dụ `D:\Image` hoặc thư mục sự kiện nhỏ hơn.
 3. Ứng dụng quét tên, đường dẫn, kích thước và thời gian sửa đổi của tệp để lập danh mục. Quá trình có hiển thị tiến độ; ảnh gốc chỉ được đọc khi tạo hình xem trước hoặc mở ảnh.
 4. Chờ thông báo hoàn tất. Có thể chọn thư mục khác bằng danh sách ở thanh trên.
@@ -19,7 +21,13 @@ Các thư mục đã chọn được ghi nhớ trên máy tính. Khi mở ứng 
 
 Dùng tìm kiếm, bộ lọc thư mục/định dạng, sắp xếp và các mục Favorites, Tags, Albums để tổ chức danh mục. Thẻ, album, yêu thích và trạng thái tệp được lưu tự động trong dữ liệu ứng dụng Windows sau khi quét hoặc chỉnh sửa. Chức năng này chỉ cập nhật tệp JSON của ứng dụng, không đổi tên, di chuyển, xóa hay ghi metadata vào ảnh gốc.
 
-HEIC/HEIF, TIFF và RAW có thể được nhận diện nhưng không nhất thiết giải mã được trong Chromium. Khi không hỗ trợ, ảnh vẫn nằm trong danh mục và có thể tìm kiếm/gắn nhãn; ứng dụng báo rõ rằng không xem trước được.
+Ứng dụng Windows giải mã HEIC/HEIF tại máy để tạo ảnh xem trước JPEG trong bộ nhớ; ảnh gốc không bị chuyển đổi hay chỉnh sửa và dữ liệu ảnh không được gửi đi nơi khác. Trong trình duyệt thông thường, xem trước HEIC/HEIF vẫn phụ thuộc vào khả năng hỗ trợ của trình duyệt. TIFF và RAW cũng phụ thuộc trình duyệt.
+
+Ảnh thu nhỏ không thể xem trước sẽ hiển thị "No preview available", không dùng ảnh khác để thay thế.
+
+## Thương hiệu
+
+Quản trị viên có thể đổi tên ứng dụng, tên ngắn, khẩu hiệu, tên MiLeo Sync/MiLeo AI, địa chỉ website và logo (PNG, JPEG hoặc WebP, tối đa 512 KB) trong **Admin dashboard → Branding**. Chọn **Reset to defaults** để trở lại MiLeo. Dữ liệu cũ (thư mục `%APPDATA%\Still Photo Library`) vẫn được dùng nên thư viện, tài khoản và điện thoại đã ghép nối không bị mất khi nâng cấp.
 
 ## Sao lưu và khôi phục
 

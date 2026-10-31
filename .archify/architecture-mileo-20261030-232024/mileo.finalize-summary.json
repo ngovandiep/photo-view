@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "command": "finalize",
+  "status": "pass",
+  "type": "architecture",
+  "quality": "showcase",
+  "specification": {
+    "path": "D:\\photo-library\\.archify\\architecture-mileo-20261030-232024\\candidate.json",
+    "sha256": "7566c0d5a8fc8b175dca4719c12382e9425e47cfe96020d9f79b60b92cd8d575",
+    "bytes": 9617
+  },
+  "artifact": {
+    "path": "D:\\photo-library\\.archify\\architecture-mileo-20261030-232024\\mileo.html",
+    "sha256": "5d9db9073ca06150c14a4163111bd33a5559ea95be438818bd71f6997b42c0b7",
+    "bytes": 858140
+  },
+  "gates": {
+    "validate": "pass",
+    "deliver": "pass",
+    "check": "pass",
+    "browser-check": "pass"
+  },
+  "diagnostics": [],
+  "diagnosticSummary": {
+    "total": 0,
+    "shown": 0,
+    "truncated": false
+  },
+  "evidence": {
+    "receipt": "D:\\photo-library\\.archify\\architecture-mileo-20261030-232024\\mileo.finalize.json",
+    "summaryReceipt": "D:\\photo-library\\.archify\\architecture-mileo-20261030-232024\\mileo.finalize-summary.json",
+    "browserCheckReceipt": "D:\\photo-library\\.archify\\architecture-mileo-20261030-232024\\mileo.browser-check.json"
+  },
+  "update": {
+    "status": "current",
+    "installedVersion": "3.2.0",
+    "availableVersion": "3.2.0",
+    "releaseNotes": null,
+    "checkedAt": "2026-10-30T16:24:52.717Z",
+    "source": "network",
+    "noticeRequired": false,
+    "noticeText": null
+  },
+  "visualReview": "not-requested",
+  "durationMs": 4388,
+  "browserCheck": {
+    "requested": true,
+    "ran": true
+  }
+}

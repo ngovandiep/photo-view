@@ -24,3 +24,10 @@
 .wifi-list button{padding:6px 10px;border:1px solid var(--line);border-radius:6px;background:none;font:inherit;cursor:pointer}
 .wifi-field{display:grid;gap:4px;margin-bottom:10px;font-size:13px;color:var(--muted)}
 .wifi-field input,.wifi-field select{padding:8px 10px;border:1px solid var(--line);border-radius:8px;font:inherit;color:var(--ink)}
+.install-phone-button{display:flex;align-items:center;justify-content:center;gap:8px;padding:10px 12px;border:1px solid var(--line);background:var(--tint);color:var(--accent);font-weight:600;white-space:nowrap}
+.install-phone-button svg{flex-shrink:0}
+#phone-install-dialog{width:min(580px,94vw);height:auto;max-height:90dvh;margin:auto;padding:24px;border-radius:14px;overflow:auto;background:var(--surface);color:var(--ink)}
+#phone-install-dialog::backdrop{background:#24292380}
+#phone-install-dialog p{font-size:13px}
+#phone-install-url{width:100%;min-width:0}
+@media(max-width:900px){.topbar{flex-wrap:wrap;height:auto;min-height:94px;padding:16px;gap:8px}.topbar .search{flex-basis:100%}.install-phone-button{font-size:12px;padding:9px}}

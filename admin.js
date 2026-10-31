@@ -14,11 +14,12 @@
 
   const PAGES = [
     ['overview', 'Overview', 'overview'], ['users', 'User management', 'users'], ['messages', 'Messages', 'chat'], ['wifi', 'Wi-Fi connections', 'wifi'], ['devices', 'Connected devices', 'phone'],
-    ['sessions', 'Sync history', 'history'], ['activity', 'Activity logs', 'list'], ['system', 'Storage & system', 'drive'], ['settings', 'Settings', 'sliders']
+    ['family', 'Family & sharing', 'users'], ['sessions', 'Sync history', 'history'], ['queue', 'Upload queue', 'queue'], ['activity', 'Activity logs', 'list'], ['system', 'Storage & system', 'drive'], ['recovery', 'Backup & recovery', 'shield'], ['branding', 'Branding', 'brand'], ['settings', 'Settings', 'sliders']
   ];
-  const filters = { devices: {}, sessions: {}, activity: {} };
-  const sorts = { devices: { key: 'lastSeen', dir: 'desc' }, sessions: { key: 'start', dir: 'desc' }, activity: { key: 'time', dir: 'desc' } };
-  const pageNo = { devices: 1, sessions: 1, activity: 1 };
+  const filters = { devices: {}, sessions: {}, files: {}, activity: {} };
+  const sorts = { devices: { key: 'lastSeen', dir: 'desc' }, sessions: { key: 'start', dir: 'desc' }, files: { key: 'updated', dir: 'desc' }, activity: { key: 'time', dir: 'desc' } };
+  const pageNo = { devices: 1, sessions: 1, files: 1, activity: 1 };
+  let historyMode = 'sessions';
 
   let root; let main; let nav; let panels; let signOut; let current = null; let currentPage = null; let wantedPage = 'overview'; let unsubscribe = null; let refreshTimer = 0; let pairingTimer = 0;
   let auth = { known: false, unlocked: false, mustChange: false, username: 'admin' };
@@ -99,9 +100,11 @@
     const message = h('p', { className: 'ad-note', role: 'alert' });
     const user = h('input', { name: 'username', type: 'text', autocomplete: 'username', required: true, value: auth.username || '' });
     const pass = h('input', { name: 'password', type: 'password', autocomplete: 'current-password', required: true });
-    const submit = button('Sign in', { kind: 'primary', onclick: () => form.requestSubmit() });
+    const submit = button('Sign in', { kind: 'primary' });
+    submit.type = 'submit';
     const form = h('form', { className: 'ad-form', onsubmit: async event => {
       event.preventDefault();
+      if (submit.disabled) return;
       submit.disabled = true; message.textContent = '';
       try {
         const result = await api.login(user.value, pass.value);
@@ -115,6 +118,11 @@
     h('label', { className: 'ad-field' }, 'Username', user), h('label', { className: 'ad-field' }, 'Password', pass), message, h('div', { className: 'ad-actions' }, submit),
     auth.mustChange ? note('First sign-in: use the default account (admin / 123456), then change the password in Settings.') : null);
     main.replaceChildren(h('div', { style: 'max-width:380px;margin:8vh auto 0' }, card('Administrator sign-in', note('Sign in to manage users, devices and sync.'), form)));
+    for (const field of [user, pass]) field.addEventListener('keydown', event => {
+      if (event.key !== 'Enter' || event.isComposing) return;
+      event.preventDefault();
+      form.requestSubmit(submit);
+    });
     user.focus();
     if (user.value) pass.focus();
   }
@@ -178,7 +186,8 @@
         const c = d.cards;
         const grid = h('div', { className: 'ad-cards' },
           statCard('Users', c.users === null ? '—' : fmt.number(c.users), c.users === null ? 'Account directory unavailable' : 'Registered accounts'),
-          statCard('Paired devices', fmt.number(c.pairedDevices)), statCard('Connected now', fmt.number(c.connectedDevices)), statCard('Active sync sessions', fmt.number(c.activeSessions)),
+          statCard('Library assets', fmt.number(c.libraryAssets), 'Photos, videos and documents indexed'), statCard('Uploaded assets', fmt.number(c.uploadedAssets), 'New files added from devices (duplicates excluded)'),
+          statCard('Paired devices', fmt.number(c.pairedDevices), `${fmt.number(c.registeredDevices)} registered`), statCard('Connected now', fmt.number(c.connectedDevices)), statCard('Active sync sessions', fmt.number(c.activeSessions)),
           statCard('Synced photos', fmt.number(c.syncedPhotos)), statCard('Synced videos', fmt.number(c.syncedVideos)), statCard('Failed jobs', fmt.number(c.failedJobs)), statCard('Pending jobs', fmt.number(c.pendingJobs)),
           statCard('Library size', fmt.bytes(c.libraryBytes), d.disk ? `${fmt.bytes(d.disk.freeBytes)} free` : 'Free space unknown'));
         const server = card('Wi-Fi sync server', kv([
@@ -202,7 +211,7 @@
           card('Failed jobs', d.failedJobs.length ? dataTable({
             columns: [{ key: 'name', label: 'File' }, { key: 'device', label: 'Device' }, { key: 'error', label: 'Error', wrap: true }, { key: 'retryCount', label: 'Retries', numeric: true }],
             rows: d.failedJobs
-          }) : emptyState('No failed jobs')),
+          }) : emptyState('No failed jobs'), button('Open upload queue', { small: true, onclick: () => { location.hash = '#admin/queue'; } })),
           card('Recent security events', d.events.length ? dataTable({
             columns: [{ key: 'at', label: 'When', render: r => fmt.ago(r.at) }, { key: 'kind', label: 'Event' }, { key: 'message', label: 'Details', wrap: true }], rows: d.events
           }) : emptyState('No security events')));
@@ -291,7 +300,7 @@
             columns: [{ key: 'email', label: 'Email' }, { key: 'displayName', label: 'Name', render: r => r.displayName || '—' }, { key: 'role', label: 'Role', render: r => roleSelect(r) }, { key: 'status', label: 'Status', render: r => (r.disabledAt ? statusBadge('revoked', 'Revoked') : statusBadge('authorized', 'Active')) }, { key: 'createdAt', label: 'Created', render: r => fmt.date(sqlTime(r.createdAt)) }, { key: 'lastLoginAt', label: 'Last login', render: r => fmt.ago(sqlTime(r.lastLoginAt)) }, { key: 'actions', label: 'Actions', render: r => userAction(r) }],
             rows, caption: 'Accounts'
           }) : emptyState('No accounts to show', dir.available === false ? undefined : 'No users have registered yet.')),
-          note('Create accounts with Add user and set roles inline. Revoking an account signs the user out and blocks sign-in; their data is kept and access can be restored. Paired devices are not linked to user accounts, so revoke devices separately.'));
+          note('Create accounts with Add user and set roles inline. Family & sharing can associate accounts with profiles and paired devices. Disabling an account blocks its family access while Family mode is enabled. Revoke a device separately to invalidate its pairing credential permanently.'));
       }
     });
   }
@@ -373,24 +382,41 @@
         const revoked = dev.authorization === 'revoked' || dev.status === 'revoked';
         return [
           h('div', {}, statusBadge(dev.status), ' ', statusBadge(revoked ? 'revoked' : 'authorized')),
-          card('Details', kv([['Device ID', fmt.shortId(dev.id)], ['Paired', fmt.date(dev.createdAt)], ['Last seen', fmt.ago(dev.lastSeenAt)], ['Account', 'Not tracked'], ['Synced files', fmt.number(dev.synced)], ['Pending', fmt.number(dev.pending)], ['Failed', fmt.number(dev.failed)], ['Photos / videos', `${fmt.number(d.totals.images)} / ${fmt.number(d.totals.videos)}`], ['Duplicates skipped', fmt.number(d.totals.duplicates)], ['Data received', fmt.bytes(d.totals.bytes)]])),
+          card('Details', kv([['Device ID', fmt.shortId(dev.id)], ['Paired', fmt.date(dev.createdAt)], ['Last seen', fmt.ago(dev.lastSeenAt)], ['Family access', 'Manage in Family & sharing'], ['Synced files', fmt.number(dev.synced)], ['Pending', fmt.number(dev.pending)], ['Failed', fmt.number(dev.failed)], ['Photos / videos', `${fmt.number(d.totals.images)} / ${fmt.number(d.totals.videos)}`], ['Duplicates skipped', fmt.number(d.totals.duplicates)], ['Data received', fmt.bytes(d.totals.bytes)]])),
           card('Rename', h('div', { className: 'ad-inline' }, rename, button('Save', { small: true, kind: 'primary', onclick: () => act(() => api.renameDevice(id, rename.value), 'Device renamed.') }))),
           card('Recent sync sessions', d.sessions.length ? dataTable({ columns: [{ key: 'status', label: 'Status', render: r => statusBadge(r.status) }, { key: 'files', label: 'Files', numeric: true, render: r => fmt.number(r.total) }, { key: 'start', label: 'Started', render: r => fmt.date(r.startedAt) }], rows: d.sessions, onRowClick: r => openSession(r.id) }) : emptyState('No sessions'),
-            button('View full sync history', { small: true, onclick: () => { filters.sessions = { deviceId: id }; pageNo.sessions = 1; panels.close(); if (currentPage === 'sessions') { currentPage = null; show('sessions'); } else location.hash = '#admin/sessions'; } })),
+            button('View full sync history', { small: true, onclick: () => { filters.sessions = { deviceId: id }; filters.files = { deviceId: id }; pageNo.sessions = 1; pageNo.files = 1; panels.close(); if (currentPage === 'sessions') { currentPage = null; show('sessions'); } else location.hash = '#admin/sessions'; } })),
           card('Recent errors', d.errors.length ? dataTable({ columns: [{ key: 'name', label: 'File' }, { key: 'message', label: 'Error', wrap: true }, { key: 'at', label: 'When', render: r => fmt.ago(r.at) }], rows: d.errors }) : emptyState('No errors')),
           card('Recent activity', d.activity.length ? dataTable({ columns: [{ key: 'ts', label: 'When', render: r => fmt.ago(r.ts) }, { key: 'message', label: 'Event', wrap: true }], rows: d.activity }) : emptyState('No activity')),
           card('Actions',
             h('div', { className: 'ad-actions' },
               revoked ? null : button('Revoke access', { kind: 'danger', onclick: async () => { if (await confirmDialog({ title: 'Revoke this device?', message: `“${dev.name}” will immediately lose access and its unfinished uploads are cancelled. Photos already synced are kept.`, confirmLabel: 'Revoke', danger: true })) act(() => api.revokeDevice(id), 'Device revoked.'); } }),
               button('Remove device', { kind: 'danger', onclick: async () => { if (await confirmDialog({ title: 'Remove this device?', message: `“${dev.name}” will be revoked and removed from the list. Photos already synced are kept in your library.`, confirmLabel: 'Remove', danger: true })) { try { const r = await api.removeDevice(id); if (!r.ok) throw new Error(r.error); toast('Device removed.'); panel.close(); current?.refresh?.(); } catch (error) { toast(error.message, 'bad'); } } } })),
-            note('Triggering, pausing or resuming a sync from the desktop is not supported — syncs are started from the phone.'))
+            note('Syncs are started from the phone. To pause receiving uploads from every device, use Pause receiving on the Upload queue page.'))
         ];
       }
     });
   }
 
-  // ---- Sync sessions ----
+  // ---- Sync history ----
+  // Builds a list page once the device list is known, so the device filter shows real device names.
+  function withDeviceOptions(build) {
+    const holder = h('div', {}, loadingState());
+    let inner = null;
+    call(api.devices({ pageSize: 100, sort: 'name', dir: 'asc' })).catch(() => ({ rows: [] })).then(data => {
+      inner = build([['', 'All devices'], ...data.rows.map(row => [row.id, row.name || 'Unnamed device'])]);
+      holder.replaceChildren(inner.node);
+    });
+    return { node: holder, refresh: () => inner?.refresh() };
+  }
+  function historyToggle() {
+    const files = historyMode === 'files';
+    return button(files ? 'Show sessions' : 'Show individual files', { onclick: () => { historyMode = files ? 'sessions' : 'files'; currentPage = null; show('sessions'); } });
+  }
   function sessionsPage() {
+    return withDeviceOptions(devices => (historyMode === 'files' ? fileHistory(devices) : sessionHistory(devices)));
+  }
+  function sessionHistory(devices) {
     const exportCsv = button('Export CSV', { icon: 'download', onclick: async () => {
       try {
         const csv = await call(api.sessionsCsv(listQuery('sessions')));
@@ -399,9 +425,10 @@
       } catch (error) { toast(error.message, 'bad'); }
     } });
     return listPage({
-      kind: 'sessions', title: 'Sync history', subtitle: 'Every sync session received from your devices.', actions: [exportCsv],
+      kind: 'sessions', title: 'Sync history', subtitle: 'Every sync session received from your devices.', actions: [historyToggle(), exportCsv],
       fields: [
-        { key: 'search', label: 'Search', type: 'search', grow: true, placeholder: 'Device or file name' },
+        { key: 'search', label: 'Search', type: 'search', grow: true, placeholder: 'Device name or session ID' },
+        { key: 'deviceId', label: 'Device', type: 'select', options: devices },
         { key: 'status', label: 'Status', type: 'select', options: [['', 'All'], ['queued', 'Queued'], ['running', 'Running'], ['completed', 'Completed'], ['completed_with_errors', 'Completed with errors'], ['failed', 'Failed'], ['cancelled', 'Cancelled']] },
         { key: 'media', label: 'Media', type: 'select', options: [['', 'All'], ['image', 'Photos'], ['video', 'Videos']] },
         { key: 'errorCategory', label: 'Error type', type: 'select', options: [['', 'All'], ['storage', 'Storage'], ['size', 'File size'], ['indexing', 'Indexing'], ['file_type', 'File type'], ['integrity', 'Integrity'], ['other', 'Other']] },
@@ -430,7 +457,7 @@
           active ? card('Progress', progressBar(s.total - s.pending, s.total), note(`${fmt.number(s.total - s.pending)} of ${fmt.number(s.total)} files processed`)) : null,
           card('Summary', kv([['Started', fmt.date(s.startedAt)], ['Finished', s.endedAt ? fmt.date(s.endedAt) : null], ['Duration', fmt.duration(s.durationMs)], ['Files', fmt.number(s.total)], ['Synchronized', fmt.number(s.succeeded)], ['Failed', fmt.number(s.failed)], ['Data received', fmt.bytes(s.bytes)]])),
           card('Files', d.files.length ? dataTable({
-            columns: [{ key: 'name', label: 'File', wrap: true }, { key: 'kind', label: 'Type' }, { key: 'size', label: 'Size', numeric: true, render: r => fmt.bytes(r.size) }, { key: 'state', label: 'State', render: r => statusBadge(r.state) }, { key: 'retryCount', label: 'Retries', numeric: true }, { key: 'error', label: 'Error', wrap: true, render: r => (r.error ? `${r.error}` : '') }],
+            columns: [{ key: 'name', label: 'File', wrap: true }, { key: 'kind', label: 'Type' }, { key: 'size', label: 'Size', numeric: true, render: r => fmt.bytes(r.size) }, { key: 'status', label: 'Status', render: r => statusBadge(r.status || r.state) }, { key: 'retryCount', label: 'Retries', numeric: true }, { key: 'error', label: 'Error', wrap: true, render: r => (r.error ? `${r.error}` : '') }],
             rows: d.files, caption: 'Files in this session'
           }) : emptyState('No files recorded'), d.truncated ? note('Only the first files are shown.') : null,
           retryable ? button('Retry failed files', { kind: 'primary', onclick: async () => { try { const r = await call(api.retrySession(id)); toast(`Retry queued for ${r.retried ?? r.count ?? 0} file(s).`); panel.reload(true); } catch (error) { toast(error.message, 'bad'); } } }) : null),
@@ -438,6 +465,103 @@
         ];
       }
     });
+  }
+
+  // ---- File history and upload queue ----
+  const CANCELLABLE = ['discovered', 'queued', 'uploading', 'failed_retryable'];
+  const fileCell = r => h('div', {}, h('strong', { text: r.name }), h('div', { className: 'ad-note', text: `${r.kind === 'video' ? 'Video' : 'Photo'} · ${r.deviceName || 'Unknown device'}` }));
+  async function assetAction(kind, row, after) {
+    if (kind === 'cancel' && !(await confirmDialog({
+      title: 'Cancel this upload job?',
+      message: `The desktop will stop accepting “${row.name}” and discard any partially received data. Nothing is deleted from the phone or from your library. The phone reports the file as failed and can upload it again with Retry.`,
+      confirmLabel: 'Cancel job', danger: true
+    }))) return;
+    try {
+      await call(kind === 'cancel' ? api.cancelAsset(row.id) : api.retryAsset(row.id));
+      toast(kind === 'cancel' ? 'Upload job cancelled.' : 'Retry started.');
+    } catch (error) { toast(error.message, 'bad'); }
+    after?.();
+  }
+  function assetButtons(row, after) {
+    const retry = row.canRetry ?? (row.status === 'failed' || row.state === 'stored');
+    const cancel = row.canCancel ?? (CANCELLABLE.includes(row.state) && !row.inLibrary);
+    return h('div', { className: 'ad-actions' },
+      retry ? button('Retry', { small: true, onclick: event => { event.stopPropagation(); assetAction('retry', row, after); } }) : null,
+      cancel ? button('Cancel', { small: true, kind: 'danger', onclick: event => { event.stopPropagation(); assetAction('cancel', row, after); } }) : null);
+  }
+  const FILE_STATUS_OPTIONS = [['', 'All'], ['pending', 'Pending'], ['uploading', 'Uploading'], ['verifying', 'Verifying'], ['imported', 'Imported'], ['duplicate', 'Duplicate'], ['failed', 'Failed'], ['cancelled', 'Cancelled']];
+  function fileHistory(devices) {
+    return listPage({
+      kind: 'files', title: 'Sync history', subtitle: 'Every file received from your devices, with upload and verification results.', actions: [historyToggle()],
+      fields: [
+        { key: 'search', label: 'File name', type: 'search', grow: true, placeholder: 'IMG_0001.jpg' },
+        { key: 'deviceId', label: 'Device', type: 'select', options: devices },
+        { key: 'status', label: 'Status', type: 'select', options: FILE_STATUS_OPTIONS },
+        { key: 'from', label: 'From', type: 'date' }, { key: 'to', label: 'To', type: 'date' }],
+      columns: [
+        { key: 'name', label: 'File', sortable: true, wrap: true, render: fileCell },
+        { key: 'updated', label: 'Last update', sortable: true, render: r => fmt.date(r.updatedAt) },
+        { key: 'size', label: 'Size', sortable: true, numeric: true, render: r => fmt.bytes(r.size) },
+        { key: 'status', label: 'Status', sortable: true, render: r => statusBadge(r.status) },
+        { key: 'verification', label: 'Verification', render: r => statusBadge(r.verification) },
+        { key: 'error', label: 'Error', wrap: true, render: r => r.error || '' }],
+      fetcher: api.files, onRow: openFile, emptyText: 'No files match. Files appear here after a phone starts syncing.'
+    });
+  }
+  function openFile(row) {
+    panels.open({
+      title: row.name, subtitle: row.deviceName || '', load: async () => row,
+      render(r, panel) {
+        const after = () => { panel.close(); current?.refresh?.(); };
+        return [
+          h('div', {}, statusBadge(r.status), ' ', statusBadge(r.verification)),
+          card('Details', kv([['Device', r.deviceName], ['Type', r.kind === 'video' ? 'Video' : 'Photo'], ['Size', fmt.bytes(r.size)], ['Received', `${fmt.bytes(r.bytesReceived)} of ${fmt.bytes(r.size)}`],
+            ['Registered', fmt.date(r.createdAt)], ['Last update', fmt.date(r.updatedAt)], ['Stored', r.storedAt ? fmt.date(r.storedAt) : null], ['Indexed', r.indexedAt ? fmt.date(r.indexedAt) : null],
+            ['SHA-256 (prefix)', r.sha256 || null], ['Retries', fmt.number(r.retryCount)], ['Next automatic retry', r.nextRetryAt ? fmt.date(r.nextRetryAt) : null], ['In library', r.inLibrary ? 'Yes' : 'No']])),
+          r.error ? card('Error', h('p', { text: r.error }), r.errorCategory ? note(`Category: ${r.errorCategory}`) : null) : null,
+          card('Actions', assetButtons(r, after), r.sessionId ? button('Open sync session', { small: true, onclick: () => openSession(r.sessionId) }) : null)
+        ];
+      }
+    });
+  }
+
+  function queuePage() {
+    let page;
+    const refresh = () => page.refresh();
+    const toggle = async running => {
+      if (running && !(await confirmDialog({ title: 'Pause receiving uploads?', message: 'The Wi-Fi sync server stops, so every phone sees the desktop as offline. Phones keep their own upload queues and continue automatically after you resume. Nothing is deleted.', confirmLabel: 'Pause receiving' }))) return;
+      try { await call(running ? api.pauseUploads() : api.resumeUploads()); toast(running ? 'Receiving paused.' : 'Receiving resumed.'); } catch (error) { toast(error.message, 'bad'); }
+      page.reload();
+    };
+    const columns = extra => [
+      { key: 'name', label: 'File', wrap: true, render: fileCell },
+      { key: 'size', label: 'Size', numeric: true, render: r => fmt.bytes(r.size) },
+      { key: 'progress', label: 'Received', render: r => h('div', {}, progressBar(r.bytesReceived, r.size), h('small', { className: 'ad-note', text: `${fmt.bytes(r.bytesReceived)} of ${fmt.bytes(r.size)}` })) },
+      { key: 'status', label: 'Status', render: r => statusBadge(r.transferring ? 'uploading' : r.status, r.transferring ? 'Transferring' : undefined) },
+      ...extra,
+      { key: 'updated', label: 'Last update', render: r => fmt.ago(r.updatedAt) },
+      { key: 'actions', label: 'Actions', render: r => assetButtons(r, refresh) }];
+    page = framePage({
+      title: 'Upload queue', subtitle: 'Jobs from paired devices that are not finished yet. Select Retry to investigate failures again.',
+      loader: () => call(api.queue()),
+      render(qd) {
+        const state = qd.running
+          ? card('Receiving', h('div', { className: 'ad-inline' }, statusBadge('ok', 'Receiving uploads'), button('Pause receiving', { small: true, onclick: () => toggle(true) })), note('Pausing stops the sync server for all devices.'))
+          : card('Receiving', h('div', { className: 'ad-inline' }, statusBadge('paused', 'Paused — sync server stopped'), button('Resume receiving', { small: true, kind: 'primary', onclick: () => toggle(false) })), note('Phones keep their queues while the desktop is paused.'));
+        return h('div', {},
+          h('div', { className: 'ad-cards' }, statCard('Active', fmt.number(qd.active.length), 'Transferring or verifying'), statCard('Pending', fmt.number(qd.pending.length), 'Waiting for the phone'), statCard('Failed', fmt.number(qd.failed.length), 'Need attention')),
+          state,
+          card('Active jobs', dataTable({ columns: columns([]), rows: qd.active, caption: 'Active jobs', empty: emptyState('No active uploads', 'Files appear here while a phone is transferring them.') })),
+          card('Pending jobs', dataTable({ columns: columns([]), rows: qd.pending, caption: 'Pending jobs', empty: emptyState('Nothing pending', 'All registered files have been received.') })),
+          card('Failed jobs', dataTable({
+            columns: columns([{ key: 'error', label: 'Error', wrap: true, render: r => h('div', {}, r.error || 'Unknown error', h('div', { className: 'ad-note', text: `Retries: ${r.retryCount}${r.nextRetryAt ? ` · next automatic retry ${fmt.date(r.nextRetryAt)}` : ''}` })) }]),
+            rows: qd.failed, caption: 'Failed jobs', empty: emptyState('No failed uploads')
+          })),
+          qd.truncated ? note('Only the 2,000 most recent jobs are shown.') : null,
+          note('Cancelling never deletes photos from the phone or the library. Files already stored in the library cannot be cancelled; retry them to finish indexing.'));
+      }
+    });
+    return page;
   }
 
   // ---- Activity ----
@@ -473,13 +597,99 @@
             card('Disk', s.disk ? h('div', {}, h('div', { className: `ad-bar ${diskUsed > 0.9 ? 'bad' : diskUsed > 0.75 ? 'warn' : ''}` }, h('i', { style: `width:${Math.round(diskUsed * 100)}%` })), note(`${fmt.bytes(s.disk.freeBytes)} free of ${fmt.bytes(s.disk.totalBytes)}`)) : emptyState('Disk information unavailable')),
             card('Database', kv([['Status', statusBadge(s.database.status === 'ok' ? 'ok' : 'error', s.database.status === 'ok' ? 'Healthy' : 'Problem')], ['Detail', s.database.detail], ['Size', fmt.bytes(s.database.bytes)], ['Schema version', s.database.schemaVersion]])),
             card('Services', kv([['Wi-Fi server', statusBadge(s.server.running ? 'ok' : 'stopped', s.server.running ? (s.server.reachable ? 'Running, reachable' : 'Running') : 'Stopped')], ['Indexing', s.indexing === 'working' ? 'Working' : 'Idle'], ['Thumbnails', `${fmt.number(s.thumbnails.files)} files · ${fmt.bytes(s.thumbnails.bytes)}`]]), note(`Thumbnail mode: ${s.thumbnails.mode}`)),
-            card('Data directory', kv([['Location', s.dataDirectory]]))),
+            card('Data directory', kv([['Location', s.dataDirectory], ['Incoming uploads (temporary)', s.incoming ? s.incoming.path : null], ['Partial files', s.incoming ? `${fmt.number(s.incoming.files)} · ${fmt.bytes(s.incoming.bytes)}` : null]]),
+              note('Partial uploads are kept here until they are verified and moved into a library, or until the job is cancelled.'))),
           card('Libraries', s.libraries.length ? dataTable({
             columns: [{ key: 'name', label: 'Library' }, { key: 'photos', label: 'Photos', numeric: true, render: r => fmt.number(r.photos) }, { key: 'videos', label: 'Videos', numeric: true, render: r => fmt.number(r.videos) }, { key: 'documents', label: 'Documents', numeric: true, render: r => fmt.number(r.documents) }, { key: 'bytes', label: 'Size', numeric: true, render: r => fmt.bytes(r.bytes) }, { key: 'error', label: 'Status', render: r => (r.error ? statusBadge('error', r.error) : statusBadge('ok')) }],
             rows: s.libraries
           }) : emptyState('No libraries', 'Add a library folder in the main window.')));
       }
     });
+  }
+
+  // ---- Backup and recovery ----
+  function recoveryPage() {
+    let page;
+    let originals = false;
+    const act = async work => {
+      try {
+        const result = await call(work());
+        if (result) toast('Recovery operation started. Progress and results appear in job history.');
+        page.reload();
+      } catch (error) { toast(error.message, 'bad'); }
+    };
+    const start = (kind, options = {}) => act(async () => {
+      if (['backup', 'rebuild', 'restore'].includes(kind)) {
+        const pending = [];
+        window.dispatchEvent(new CustomEvent('still:flush-library', { detail: { waitUntil: promise => pending.push(promise) } }));
+        await Promise.all(pending);
+      }
+      return api.backupStart(kind, options);
+    });
+    const showReport = async id => {
+      panels.open({ title: 'Recovery report', load: () => call(api.backupJob(id)), render: job => {
+        const rows = job.report || [];
+        let offset = 0;
+        const table = h('div');
+        const renderRows = () => {
+          table.replaceChildren(dataTable({
+            columns: [
+              { key: 'library', label: 'Library' }, { key: 'path', label: 'File', wrap: true },
+              { key: 'status', label: 'Result' },
+              { key: 'message', label: 'Details', wrap: true, render: row => row.message || (row.added !== undefined ? `${row.added} added; ${row.updated} updated; ${row.missing} missing; ${row.protected} protected. ${(row.errors || []).map(error => `${error.path}: ${error.code}`).join('; ')}` : '') }
+            ], rows: rows.slice(offset, offset + 100), empty: emptyState('No report entries yet')
+          }), note(`${rows.length ? offset + 1 : 0}-${Math.min(offset + 100, rows.length)} of ${rows.length} entries`),
+          h('div', { className: 'ad-actions' },
+            button('Previous', { disabled: offset === 0, onclick: () => { offset -= 100; renderRows(); } }),
+            button('Next', { disabled: offset + 100 >= rows.length, onclick: () => { offset += 100; renderRows(); } })));
+        };
+        renderRows();
+        return h('div', {}, kv([['Operation', job.kind], ['State', job.state], ['Started', fmt.date(job.startedAt)], ['Finished', fmt.date(job.finishedAt)], ['Files checked / copied', fmt.number(job.processed)], ['Bytes read / copied', fmt.bytes(job.bytes)], ['Backup folder', job.location], ['Rollback copy', job.rollback]]),
+          job.error ? banner([job.error], 'bad') : null, table);
+      } });
+    };
+    page = framePage({
+      title: 'Backup & recovery', subtitle: 'Verified local backups, read-only integrity checks and non-destructive recovery.',
+      loader: () => call(api.backupStatus()),
+      render(data) {
+        const pending = data.jobs.some(job => job.state === 'awaiting_restart');
+        const disabled = Boolean(data.activeId) || pending;
+        const include = h('input', { type: 'checkbox', checked: originals, disabled, onchange: event => { originals = event.target.checked; } });
+        return h('div', {},
+          note('Pause receiving in Upload queue before a backup or index rebuild. Keep the PC on until the job finishes. Backups contain private metadata and account password hashes: use an access-controlled destination, preferably on another encrypted drive. M4 does not encrypt backup files.'),
+          data.activeId ? banner(['A recovery job is running. Refresh to see persisted progress.'], '') : null,
+          pending ? card('Restore ready', note('The verified snapshot will replace application metadata on restart. Current metadata is retained for rollback. Existing originals are never overwritten. Account sign-in and phone pairing will be required again.'),
+            button('Restart and restore', { kind: 'danger', onclick: () => act(() => api.backupRestart()) })) : null,
+          h('div', { className: 'ad-grid' },
+            card('Backup destination', kv([['Folder', data.settings.destination || 'Not configured']]),
+              h('div', { className: 'ad-actions' }, button('Choose destination', { disabled, onclick: () => act(() => api.backupDestination()) }), button('Open existing backup', { disabled, onclick: () => act(() => api.backupOpen()) })),
+              note('The destination must not overlap any library or application-data folder. Open existing backup also works when local job history has been lost.')),
+            card('Create a backup',
+              h('label', { className: 'ad-inline' }, include, 'Also copy original photos, videos and supported documents'),
+              note('Unchecked: back up JSON indexes, annotations, UI state, branding and consistent SQLite snapshots only. No caches, portable credentials or incomplete uploads.'),
+              button('Create verified backup', { kind: 'primary', disabled: disabled || !data.settings.destination, onclick: () => start('backup', { originals }) })),
+            card('Storage integrity', note('Read-only checks report missing, unreadable and mismatched files. Files without a stored hash are explicitly marked no_hash, not verified. Known hashes are never silently replaced.'),
+              button('Check library integrity', { disabled, onclick: () => start('integrity') })),
+            card('Indexes and thumbnails', note('Reconcile with disk using the existing scanner. Preserve annotations, missing records and hash baselines. Previous indexes and retired caches are retained. Thumbnails regenerate when viewed. The window reloads when index recovery finishes; failures are reported explicitly.'),
+              h('div', { className: 'ad-actions' }, button('Reconcile and rebuild', { disabled, onclick: () => start('rebuild') }), button('Reload library previews', { disabled, onclick: () => location.reload() })))),
+          card('Job history', dataTable({
+            columns: [
+              { key: 'startedAt', label: 'Started', render: row => fmt.date(row.startedAt) },
+              { key: 'kind', label: 'Operation' }, { key: 'state', label: 'State' },
+              { key: 'processed', label: 'Files', render: row => fmt.number(row.processed) },
+              { key: 'error', label: 'Error', wrap: true },
+              { key: 'actions', label: 'Actions', render: row => h('div', { className: 'ad-actions' },
+                button('Report', { small: true, onclick: () => showReport(row.id) }),
+                row.kind === 'backup' && row.state === 'completed' ? [
+                  button('Verify', { small: true, disabled, onclick: () => start('verify', { backupId: row.id }) }),
+                  button('Restore metadata', { small: true, disabled, onclick: () => start('restore', { backupId: row.id }) }),
+                  button('Restore + missing originals', { small: true, disabled, onclick: () => start('restore', { backupId: row.id, originals: true }) })
+                ] : null) }
+            ], rows: data.jobs, empty: emptyState('No backup or recovery jobs', 'Configure a separate destination, then create your first verified backup.')
+          })));
+      }
+    });
+    return page;
   }
 
   // ---- Settings ----
@@ -536,6 +746,73 @@
           ['The activity log keeps the most recent 5,000 events.', 'The server accepts connections from the local network only; remote administration is not available.', 'Maximum concurrent uploads and Wi-Fi-only enforcement are not configurable.'].map(t => h('li', { text: t })))));
       }
     });
+  }
+
+  // ---- Branding ----
+  const LOGO_LIMIT = 512 * 1024;
+  function brandingPage() {
+    const body = region();
+    const load = () => body.load(() => call(api.branding()), ({ current: brand, defaults }) => {
+      let logo = brand.logo || '';
+      const preview = h('div', { className: 'ad-brand-preview' });
+      const nameField = (label, name, max, hint) => h('label', { className: 'ad-field' }, label, h('input', { name, type: 'text', value: brand[name] || '', maxLength: max, required: true, placeholder: defaults[name] }), hint ? h('small', { text: hint }) : null);
+      const website = h('input', { name: 'websiteUrl', type: 'text', inputMode: 'url', autocomplete: 'url', value: brand.websiteUrl || '', maxLength: 300, placeholder: 'https://example.com' });
+      const fileInput = h('input', { type: 'file', accept: 'image/png,image/jpeg,image/webp', className: 'ad-file' });
+      const removeLogo = button('Remove logo', { small: true, onclick: () => { logo = ''; fileInput.value = ''; renderPreview(); } });
+      const renderPreview = () => {
+        const data = new FormData(form);
+        const shortName = String(data.get('shortName') || defaults.shortName).trim() || defaults.shortName;
+        const mark = logo ? h('img', { src: logo, alt: 'Logo preview' }) : h('span', { text: shortName[0].toUpperCase() });
+        preview.replaceChildren(h('div', { className: `ad-brand-mark${logo ? ' has-logo' : ''}` }, mark), h('div', {},
+          h('strong', { text: String(data.get('appName') || defaults.appName) }),
+          h('small', { text: String(data.get('tagline') || defaults.tagline) })));
+        removeLogo.hidden = !logo;
+      };
+      fileInput.addEventListener('change', () => {
+        const file = fileInput.files[0];
+        if (!file) return;
+        if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) { toast('Choose a PNG, JPEG or WebP image.', 'bad'); fileInput.value = ''; return; }
+        if (file.size > LOGO_LIMIT) { toast('The logo must be 512 KB or smaller.', 'bad'); fileInput.value = ''; return; }
+        const reader = new FileReader();
+        reader.onload = () => { logo = String(reader.result); renderPreview(); };
+        reader.onerror = () => toast('The logo could not be read.', 'bad');
+        reader.readAsDataURL(file);
+      });
+      const form = h('form', { className: 'ad-form', oninput: () => renderPreview(), onsubmit: async event => {
+        event.preventDefault();
+        const data = new FormData(form);
+        const patch = { logo };
+        for (const key of ['appName', 'shortName', 'syncName', 'aiName', 'tagline', 'websiteUrl']) patch[key] = String(data.get(key) || '').trim();
+        try {
+          await call(api.saveBranding(patch));
+          toast('Branding saved.');
+          load();
+        } catch (error) { toast(error.message, 'bad'); }
+      } },
+      nameField('Application name', 'appName', 60, 'Shown in the window title, welcome screen and notifications.'),
+      nameField('Short name', 'shortName', 24, 'Shown in the sidebar and on the phone Home Screen. Its first letter is used when there is no logo.'),
+      nameField('Slogan', 'tagline', 120),
+      nameField('Mobile sync name', 'syncName', 40, 'Name of the phone companion and Wi-Fi sync.'),
+      nameField('AI features name', 'aiName', 40, 'Reserved for AI-powered features.'),
+      h('label', { className: 'ad-field' }, 'Website URL', website, h('small', { text: 'Optional. http:// or https:// only. Shown as a link in the sidebar.' })),
+      h('label', { className: 'ad-field' }, 'Logo', fileInput, h('small', { text: 'PNG, JPEG or WebP, up to 512 KB. A square image works best.' })),
+      h('div', { className: 'ad-actions' }, removeLogo),
+      h('div', { className: 'ad-actions' },
+        button('Save branding', { kind: 'primary', onclick: () => form.requestSubmit() }),
+        button('Reset to defaults', { onclick: async () => {
+          if (!(await confirmDialog({ title: 'Reset branding?', message: `Restore the default ${defaults.appName} name, slogan and logo.`, confirmLabel: 'Reset' }))) return;
+          try { await call(api.resetBranding()); toast('Branding reset to defaults.'); load(); } catch (error) { toast(error.message, 'bad'); }
+        } })));
+      renderPreview();
+      return h('div', {}, card('Preview', preview), card('Brand details', form),
+        card('Notes', h('ul', { className: 'ad-list' }, [
+          'Changes apply immediately to this window and to phones the next time they load the page.',
+          'The installed program, its shortcut and the phone Home Screen icon keep the name they were installed with.'
+        ].map(t => h('li', { text: t })))));
+    });
+    const node = h('div', {}, pageHeader('Branding', 'Product name, slogan, logo and website shown across the app.', button('Reload', { icon: 'refresh', onclick: load })), body.node);
+    load();
+    return { node };
   }
 
   // ---- Messages & notifications ----
@@ -637,7 +914,76 @@
     load();
     return { node, refresh: load, chatEvent: () => load() };
   }
-  const PAGE_RENDERERS = { overview: overviewPage, users: usersPage, messages: messagesPage, wifi: wifiPage, devices: devicesPage, sessions: sessionsPage, activity: activityPage, system: systemPage, settings: settingsPage };
+  function familyPage() {
+    let page;
+    const save = async input => {
+      try { await call(api.saveFamily(input)); toast('Family settings saved.'); page.reload(); }
+      catch (error) { toast(error.message, 'bad'); }
+    };
+    const select = (options, value) => h('select', {}, options.map(([id, label]) => h('option', { value: id, text: label, selected: String(id) === String(value) })));
+    const field = (label, control) => h('label', { className: 'ad-field' }, label, control);
+    const check = (label, checked) => {
+      const input = h('input', { type: 'checkbox', checked: Boolean(checked) });
+      return { input, node: h('label', { className: 'ad-inline' }, input, label) };
+    };
+    page = framePage({
+      title: 'Family & sharing', subtitle: 'Local accounts, owned devices and read-only album grants. Public Internet access stays off.',
+      loader: () => call(api.family()),
+      render(d) {
+        const profileForm = profile => {
+          const account = select(d.accounts.map(row => [row.id, `${row.email}${row.disabled ? ' (disabled)' : ''}`]), profile?.account_id || d.accounts[0]?.id || '');
+          const name = h('input', { type: 'text', value: profile?.name || '', required: true, maxLength: 100 });
+          const role = select([['viewer', 'Read-only'], ['contributor', 'Contributor (upload + shared viewing)']], profile?.role || 'viewer');
+          const enabled = check('Profile enabled', profile ? profile.enabled : true);
+          return h('form', { className: 'ad-form', onsubmit: event => {
+            event.preventDefault();
+            save({ action: 'profile', profile: { ...(profile ? { id: profile.id } : {}), accountId: Number(account.value), name: name.value, role: role.value, enabled: enabled.input.checked } });
+          } }, field('Local account', account), field('Profile name', name), field('Family role', role), enabled.node,
+          h('button', { type: 'submit', className: 'ad-btn primary', text: profile ? 'Save profile' : 'Create profile' }));
+        };
+        const deviceForms = d.devices.map(device => {
+          const owner = select([['', 'Unassigned'], ...d.profiles.map(profile => [profile.id, profile.name])], device.profile_id || '');
+          const enabled = check('Receive uploads', device.upload_enabled);
+          const images = check('Photos', device.allow_images);
+          const videos = check('Videos', device.allow_videos);
+          const maximum = h('input', { type: 'number', min: 1, max: 1048576, required: true, value: device.max_file_size_mb });
+          return card(device.name, h('form', { className: 'ad-form', onsubmit: event => {
+            event.preventDefault();
+            save({ action: 'device', deviceId: device.id, policy: { profileId: owner.value || null, uploadEnabled: enabled.input.checked, allowImages: images.input.checked, allowVideos: videos.input.checked, maxFileSizeMB: Number(maximum.value) } });
+          } }, field('Owner profile', owner), enabled.node, images.node, videos.node, field('Maximum file size (MB; server limit also applies)', maximum),
+          h('button', { type: 'submit', className: 'ad-btn primary', text: 'Save device policy' })));
+        });
+        const shareRows = [];
+        for (const profile of d.profiles) {
+          for (const library of d.libraries) {
+            for (const album of library.albums) {
+              const grant = check(`${profile.name} / ${library.name} / ${album.name}`, d.grants.some(row => row.profile_id === profile.id && row.library_id === library.id && row.album_id === album.id));
+              grant.input.addEventListener('change', () => save({ action: 'grant', profileId: profile.id, libraryId: library.id, albumId: album.id, enabled: grant.input.checked }));
+              shareRows.push(h('div', {}, grant.node));
+            }
+          }
+        }
+        const stale = d.grants.filter(grant => !d.libraries.some(library => library.id === grant.library_id && library.albums.some(album => album.id === grant.album_id)));
+        return h('div', {},
+          card('Access boundary', statusBadge(d.enabled ? 'ok' : 'offline', d.enabled ? 'Family mode enabled' : 'Legacy mode'),
+            note('Family mode blocks unassigned devices. Read-only profiles cannot upload. Shared albums never allow editing or deletion. Turning Family mode off restores legacy Desktop-account browsing and pairing-based uploads.'),
+            button(d.enabled ? 'Disable Family mode' : 'Enable Family mode', { kind: 'primary', onclick: async () => {
+              if (await confirmDialog({ title: d.enabled ? 'Restore legacy access?' : 'Enable family access controls?', message: d.enabled ? 'Legacy access is broader: paired devices can upload without a family profile, subject to device policy. Library browsing uses the Desktop account again.' : 'Unassigned devices and read-only profiles will be blocked from uploading. Family browsing requires the assigned local account and an explicit album grant.', confirmLabel: 'Confirm' })) save({ action: 'mode', enabled: !d.enabled });
+            } })),
+          card('Create profile', note('Contributors require an editor or admin local account. A viewer account remains read-only even if its family profile was previously a contributor.'), d.accounts.length ? profileForm(null) : emptyState('Create a local account first', 'Use User management → Add user.')),
+          ...d.profiles.map(profile => card(profile.name, profileForm(profile))),
+          card('Read-only album sharing', shareRows.length ? h('div', {}, ...shareRows) : emptyState('No album grants available', 'Create profiles here and albums in the existing Desktop library.'),
+            ...stale.map(grant => button('Remove unavailable album grant', { onclick: () => save({ action: 'grant', profileId: grant.profile_id, libraryId: grant.library_id, albumId: grant.album_id, enabled: false }) }))),
+          card('Device ownership & upload policies', note('Pausing a device preserves its partial upload for resume. Phone Wi-Fi and charging rules remain managed on Android; the server does not infer those conditions.'),
+            deviceForms.length ? h('div', {}, ...deviceForms) : emptyState('No paired devices')),
+          card('External storage & remote access', note('Register an external drive or a mounted/UNC NAS folder through the existing library folder picker. Keep its path stable. Disconnected roots retain index metadata; reconnect and rescan. Database backups and original-file backups remain separate.'),
+            note('Remote access requires a separately configured VPN routing to the private LAN address. No public listener, port forwarding or automatic tunnel is enabled. Keep TLS trust and device pairing intact. See docs/FAMILY_SHARING.md for compatibility limits.')));
+      }
+    });
+    return page;
+  }
+
+  const PAGE_RENDERERS = { overview: overviewPage, users: usersPage, messages: messagesPage, wifi: wifiPage, devices: devicesPage, family: familyPage, sessions: sessionsPage, queue: queuePage, activity: activityPage, system: systemPage, recovery: recoveryPage, branding: brandingPage, settings: settingsPage };
 
   function init() {
     build();

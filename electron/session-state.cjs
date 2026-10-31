@@ -10,11 +10,24 @@ const SCAN_VERSION = 1;
 
 const text = (value, max) => (typeof value === 'string' ? value.slice(0, max) : '');
 const validLibraryId = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+function sanitizePins(value) {
+  const pinnedLibraries = Array.isArray(value.pinnedLibraries) ? [...new Set(value.pinnedLibraries.filter(validLibraryId))].slice(0, 1000) : [];
+  const pinnedFoldersByLibrary = {};
+  if (value.pinnedFoldersByLibrary && typeof value.pinnedFoldersByLibrary === 'object' && !Array.isArray(value.pinnedFoldersByLibrary)) {
+    for (const [libraryId, folders] of Object.entries(value.pinnedFoldersByLibrary).slice(0, 100)) {
+      if (!validLibraryId(libraryId) || !Array.isArray(folders)) continue;
+      const validFolders = folders.filter(folder => typeof folder === 'string' && folder.length > 0 && folder.length <= 1024 && !folder.startsWith('/') && !folder.includes('\\') && !folder.split('/').includes('..'));
+      pinnedFoldersByLibrary[libraryId] = [...new Set(validFolders)].slice(0, 500);
+    }
+  }
+  return { pinnedLibraries, pinnedFoldersByLibrary };
+}
 
 // Only known fields survive, so a corrupt or tampered file can never feed arbitrary values to the renderer.
 function sanitizeUi(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const page = Number.isInteger(value.page) && value.page >= 0 && value.page < 100000 ? value.page : 0;
+  const pins = sanitizePins(value);
   return {
     libraryId: validLibraryId(value.libraryId) ? value.libraryId : '',
     view: VIEWS.includes(value.view) ? value.view : 'photos',
@@ -25,7 +38,8 @@ function sanitizeUi(value) {
     type: text(value.type, 20),
     sort: SORTS.includes(value.sort) ? value.sort : 'name',
     page,
-    savedAt: text(value.savedAt, 40)
+    savedAt: text(value.savedAt, 40),
+    ...pins
   };
 }
 

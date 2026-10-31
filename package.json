@@ -1,12 +1,13 @@
 {
   "name": "still-photo-library",
-  "productName": "Still Photo Library",
+  "productName": "MiLeo Photo Library",
   "version": "1.0.0",
-  "description": "Private, local-first Windows photo library",
+  "description": "MiLeo Photo Library - your memories, your library, your world. Private, local-first Windows photo library.",
   "main": "electron/main.cjs",
   "private": true,
   "license": "UNLICENSED",
   "dependencies": {
+    "heic-convert": "^2.1.0",
     "photoswipe": "5.4.4",
     "qrcode": "^1.5.4",
     "selfsigned": "^5.5.0"
@@ -26,13 +27,14 @@
   },
   "build": {
     "appId": "com.still.photolibrary",
-    "productName": "Still Photo Library",
+    "productName": "MiLeo Photo Library",
     "directories": {
       "output": "dist",
       "buildResources": "assets"
     },
     "files": [
       "index.html",
+      "branding.js",
       "styles.css",
       "app.js",
       "auth-ui.js",
@@ -40,6 +42,7 @@
       "chat-ui.js",
       "chat.css",
       "wifi-sync-ui.js",
+      "install-phone.js",
       "wifi-sync.css",
       "admin.js",
       "admin-ui.js",
@@ -68,7 +71,7 @@
         }
       ],
       "icon": "assets/app-icon.ico",
-      "artifactName": "Still-Photo-Library-Setup-${version}-${arch}.${ext}"
+      "artifactName": "MiLeo-Photo-Library-Setup-${version}-${arch}.${ext}"
     },
     "nsis": {
       "oneClick": false,
@@ -76,7 +79,7 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Still Photo Library"
+      "shortcutName": "MiLeo Photo Library"
     }
   }
 }
